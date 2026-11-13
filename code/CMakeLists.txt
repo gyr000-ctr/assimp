@@ -889,6 +889,7 @@ ADD_ASSIMP_IMPORTER( GLTF
   AssetLib/glTF2/glTF2AssetWriter.inl
   AssetLib/glTF2/glTF2Importer.cpp
   AssetLib/glTF2/glTF2Importer.h
+  AssetLib/glTF2/glTF2MaterialVariants.h
 )
 
 ADD_ASSIMP_IMPORTER(3MF

@@ -1,0 +1,73 @@
+{
+    "asset": {
+        "version": "2.0",
+        "generator": "assimp KHR_materials_variants unit test"
+    },
+    "extensionsUsed": [
+        "KHR_materials_variants"
+    ],
+    "extensions": {
+        "KHR_materials_variants": {
+            "variants": [
+                { "name": "ok" },
+                { "name": "broken" }
+            ]
+        }
+    },
+    "scene": 0,
+    "scenes": [
+        { "nodes": [0] }
+    ],
+    "nodes": [
+        { "mesh": 0, "name": "out_of_range" }
+    ],
+    "meshes": [
+        {
+            "name": "out_of_range",
+            "primitives": [
+                {
+                    "attributes": { "POSITION": 0 },
+                    "material": 0,
+                    "extensions": {
+                        "KHR_materials_variants": {
+                            "mappings": [
+                                { "material": 1, "variants": [0] },
+                                { "material": 7, "variants": [1] },
+                                { "material": 1, "variants": [9] }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "materials": [
+        {
+            "name": "default",
+            "pbrMetallicRoughness": { "baseColorFactor": [1.0, 1.0, 1.0, 1.0] }
+        },
+        {
+            "name": "ok_variant",
+            "pbrMetallicRoughness": { "baseColorFactor": [1.0, 0.0, 0.0, 1.0] }
+        }
+    ],
+    "accessors": [
+        {
+            "bufferView": 0,
+            "componentType": 5126,
+            "count": 3,
+            "type": "VEC3",
+            "min": [0.0, 0.0, 0.0],
+            "max": [1.0, 1.0, 0.0]
+        }
+    ],
+    "bufferViews": [
+        { "buffer": 0, "byteOffset": 0, "byteLength": 36 }
+    ],
+    "buffers": [
+        {
+            "byteLength": 36,
+            "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+        }
+    ]
+}

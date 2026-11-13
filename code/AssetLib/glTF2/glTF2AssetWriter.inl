@@ -610,16 +610,60 @@ namespace glTF2 {
             prim.SetObject();
 
             // Extensions
-            if (p.ngonEncoded)
             {
                 Value exts;
                 exts.SetObject();
+                bool hasExts = false;
 
-                Value FB_ngon_encoding;
-                FB_ngon_encoding.SetObject();
+                if (p.ngonEncoded)
+                {
+                    Value FB_ngon_encoding;
+                    FB_ngon_encoding.SetObject();
 
-                exts.AddMember(StringRef("FB_ngon_encoding"), FB_ngon_encoding, w.mAl);
-                prim.AddMember("extensions", exts, w.mAl);
+                    exts.AddMember(StringRef("FB_ngon_encoding"), FB_ngon_encoding, w.mAl);
+                    hasExts = true;
+                }
+
+                if (!p.materialVariants.empty())
+                {
+                    // KHR_materials_variants: group the variant indices by material so
+                    // that every emitted mapping references each material only once.
+                    std::map<unsigned int, std::vector<unsigned int>> variantsByMaterial;
+                    for (size_t v = 0; v < p.materialVariants.size(); ++v) {
+                        if (p.materialVariants[v]) {
+                            variantsByMaterial[p.materialVariants[v]->index].push_back(static_cast<unsigned int>(v));
+                        }
+                    }
+                    if (!variantsByMaterial.empty()) {
+                        Value mappings;
+                        mappings.SetArray();
+                        for (auto &entry : variantsByMaterial) {
+                            Value mapping;
+                            mapping.SetObject();
+                            mapping.AddMember("material", entry.first, w.mAl);
+
+                            Value variants;
+                            variants.SetArray();
+                            for (unsigned int variantIndex : entry.second) {
+                                variants.PushBack(variantIndex, w.mAl);
+                            }
+                            mapping.AddMember("variants", variants, w.mAl);
+
+                            mappings.PushBack(mapping, w.mAl);
+                        }
+
+                        Value variantsExt;
+                        variantsExt.SetObject();
+                        variantsExt.AddMember("mappings", mappings, w.mAl);
+                        exts.AddMember(StringRef("KHR_materials_variants"), variantsExt, w.mAl);
+                        hasExts = true;
+                    }
+                }
+
+                if (hasExts)
+                {
+                    prim.AddMember("extensions", exts, w.mAl);
+                }
             }
 
             {
@@ -852,6 +896,7 @@ namespace glTF2 {
 
         WriteMetadata();
         WriteExtensionsUsed();
+        WriteExtensions();
 
         // Dump the contents of the dictionaries
         for (size_t i = 0; i < a.mDicts.size(); ++i) {
@@ -1061,6 +1106,10 @@ namespace glTF2 {
                 exts.PushBack(StringRef("KHR_materials_anisotropy"), mAl);
             }
 
+            if (this->mAsset.extensionsUsed.KHR_materials_variants && !this->mAsset.materialVariantNames.empty()) {
+                exts.PushBack(StringRef("KHR_materials_variants"), mAl);
+            }
+
             if (this->mAsset.extensionsUsed.FB_ngon_encoding) {
                 exts.PushBack(StringRef("FB_ngon_encoding"), mAl);
             }
@@ -1080,6 +1129,34 @@ namespace glTF2 {
             extsReq.PushBack(StringRef("KHR_texture_basisu"), mAl);
             mDoc.AddMember("extensionsRequired", extsReq, mAl);
         }
+    }
+
+    inline void AssetWriter::WriteExtensions()
+    {
+        // KHR_materials_variants: declare the variant names at the asset root.
+        if (!mAsset.extensionsUsed.KHR_materials_variants || mAsset.materialVariantNames.empty()) {
+            return;
+        }
+
+        Value *extensions = FindObject(mDoc, "extensions");
+        if (nullptr == extensions) {
+            mDoc.AddMember("extensions", Value().SetObject().Move(), mAl);
+            extensions = FindObject(mDoc, "extensions");
+        }
+
+        Value variants;
+        variants.SetArray();
+        for (const std::string &name : mAsset.materialVariantNames) {
+            Value variant;
+            variant.SetObject();
+            variant.AddMember("name", Value().SetString(name.c_str(), static_cast<rapidjson::SizeType>(name.length()), mAl).Move(), mAl);
+            variants.PushBack(variant, mAl);
+        }
+
+        Value variantsExt;
+        variantsExt.SetObject();
+        variantsExt.AddMember("variants", variants, mAl);
+        extensions->AddMember(StringRef("KHR_materials_variants"), variantsExt, mAl);
     }
 
     template<class T>

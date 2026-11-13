@@ -43,9 +43,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "AssetLib/glTF2/glTF2Exporter.h"
 #include "AssetLib/glTF2/glTF2AssetWriter.h"
+#include "AssetLib/glTF2/glTF2MaterialVariants.h"
 #include "PostProcessing/SplitLargeMeshes.h"
 
 #include <assimp/ByteSwapper.h>
+#include <assimp/DefaultLogger.hpp>
 #include <assimp/Exceptional.h>
 #include <assimp/SceneCombiner.h>
 #include <assimp/StringComparison.h>
@@ -120,6 +122,8 @@ glTF2Exporter::glTF2Exporter(const char *filename, IOSystem *pIOSystem, const ai
     }
 
     ExportMetadata();
+
+    ExportMaterialVariants();
 
     ExportMaterials();
 
@@ -1230,6 +1234,28 @@ void glTF2Exporter::ExportMeshes() {
         p.material = mAsset->materials.Get(aim->mMaterialIndex);
         p.ngonEncoded = (aim->mPrimitiveTypes & aiPrimitiveType_NGONEncodingFlag) != 0;
 
+        // KHR_materials_variants: restore the per-primitive variant -> material
+        // mapping from the scene metadata. Materials are only referenced, never
+        // duplicated, so a material shared by several variants stays a single
+        // glTF material.
+        if (!mAsset->materialVariantNames.empty() && mScene->mMetaData != nullptr) {
+            for (size_t v = 0; v < mAsset->materialVariantNames.size(); ++v) {
+                int32_t materialIndex = -1;
+                if (!mScene->mMetaData->Get(glTF2Variants::MeshVariantMaterialKey(idx_mesh, static_cast<unsigned int>(v)), materialIndex)) {
+                    continue;
+                }
+                if (materialIndex < 0 || static_cast<unsigned int>(materialIndex) >= mAsset->materials.Size()) {
+                    // Safe fallback for a dangling material reference: skip this entry.
+                    ASSIMP_LOG_WARN("glTF2: KHR_materials_variants mapping of mesh ", idx_mesh, " for variant ", v, " references invalid material index ", materialIndex, ". The entry is skipped.");
+                    continue;
+                }
+                if (p.materialVariants.empty()) {
+                    p.materialVariants.resize(mAsset->materialVariantNames.size());
+                }
+                p.materialVariants[v] = mAsset->materials.Get(static_cast<unsigned int>(materialIndex));
+            }
+        }
+
         /******************* Vertices ********************/
         Ref<Accessor> v = ExportData(*mAsset, meshId, b, aim->mNumVertices, aim->mVertices, AttribType::VEC3,
                 AttribType::VEC3, ComponentType_FLOAT, BufferViewTarget_ARRAY_BUFFER);
@@ -1645,6 +1671,36 @@ void glTF2Exporter::ExportMetadata() {
     if (mScene->mMetaData != nullptr && mScene->mMetaData->Get(AI_METADATA_SOURCE_COPYRIGHT, copyright_str)) {
         asset.copyright = copyright_str.C_Str();
     }
+}
+
+void glTF2Exporter::ExportMaterialVariants() {
+    // KHR_materials_variants: restore the variant names from the scene metadata
+    // written by the importer (see glTF2MaterialVariants.h). The per-primitive
+    // mappings are picked up in ExportMeshes.
+    if (mScene->mMetaData == nullptr) {
+        return;
+    }
+
+    int32_t variantCount = 0;
+    if (!mScene->mMetaData->Get(glTF2Variants::VariantCountKey(), variantCount) || variantCount <= 0) {
+        return;
+    }
+
+    mAsset->materialVariantNames.clear();
+    mAsset->materialVariantNames.reserve(static_cast<size_t>(variantCount));
+    for (int32_t v = 0; v < variantCount; ++v) {
+        aiString name;
+        if (!mScene->mMetaData->Get(glTF2Variants::VariantNameKey(static_cast<unsigned int>(v)), name)) {
+            // Safe fallback for a missing name entry: keep the variant with an empty
+            // name instead of dropping the whole extension.
+            ASSIMP_LOG_WARN("glTF2: KHR_materials_variants variant ", v, " has no name metadata. Exporting it with an empty name.");
+            mAsset->materialVariantNames.emplace_back();
+        } else {
+            mAsset->materialVariantNames.emplace_back(name.C_Str());
+        }
+    }
+
+    mAsset->extensionsUsed.KHR_materials_variants = true;
 }
 
 inline Ref<Accessor> GetSamplerInputRef(Asset &asset, std::string &animId, Ref<Buffer> &buffer, std::vector<ai_real> &times) {

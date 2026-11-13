@@ -124,6 +124,7 @@ SET( IMPORTERS
   unit/utSMDImportExport.cpp
   unit/utglTFImportExport.cpp
   unit/utglTF2ImportExport.cpp
+  unit/utglTF2MaterialVariants.cpp
   unit/utHMPImportExport.cpp
   unit/utIFCImportExport.cpp
   unit/utFBXImporterExporter.cpp

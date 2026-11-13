@@ -43,6 +43,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "glTF2Importer.h"
 #include "glTF2Asset.h"
+#include "glTF2MaterialVariants.h"
 #include "PostProcessing/MakeVerboseFormat.h"
 
 #if !defined(ASSIMP_BUILD_NO_EXPORT)
@@ -1942,7 +1943,8 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
     const bool hasCopyright = !a.asset.copyright.empty();
     const bool hasSceneMetadata = a.scene->customExtensions;
     const bool hasSceneExtras = a.scene->extras.HasExtras();
-    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras) {
+    const bool hasMaterialVariants = !a.materialVariantNames.empty();
+    if (hasVersion || hasGenerator || hasCopyright || hasSceneMetadata || hasSceneExtras || hasMaterialVariants) {
         mScene->mMetaData = new aiMetadata;
         if (hasVersion) {
             mScene->mMetaData->Add(AI_METADATA_SOURCE_FORMAT_VERSION, aiString(a.asset.version));
@@ -1958,6 +1960,42 @@ void glTF2Importer::ImportCommonMetadata(glTF2::Asset &a) {
         }
         if (hasSceneExtras) {
             ParseExtras(mScene->mMetaData, a.scene->extras);
+        }
+        if (hasMaterialVariants) {
+            ImportMaterialVariantsMetadata(a);
+        }
+    }
+}
+
+void glTF2Importer::ImportMaterialVariantsMetadata(glTF2::Asset &a) {
+    // KHR_materials_variants: expose the variant names and the per-primitive
+    // variant -> material mapping as scene metadata. The default material stays
+    // in aiMesh::mMaterialIndex, so callers that are unaware of the extension
+    // see no behavior change. See glTF2MaterialVariants.h for the key layout.
+    aiMetadata *metadata = mScene->mMetaData;
+    metadata->Add(glTF2Variants::VariantCountKey(), static_cast<int32_t>(a.materialVariantNames.size()));
+    for (size_t v = 0; v < a.materialVariantNames.size(); ++v) {
+        metadata->Add(glTF2Variants::VariantNameKey(static_cast<unsigned int>(v)), aiString(a.materialVariantNames[v]));
+    }
+
+    for (unsigned int m = 0; m < a.meshes.Size(); ++m) {
+        Mesh &mesh = a.meshes[m];
+        for (size_t p = 0; p < mesh.primitives.size(); ++p) {
+            Mesh::Primitive &prim = mesh.primitives[p];
+            if (prim.materialVariants.empty()) {
+                continue;
+            }
+            const unsigned int aiMeshIndex = meshOffsets[m] + static_cast<unsigned int>(p);
+            if (aiMeshIndex >= mScene->mNumMeshes) {
+                continue;
+            }
+            metadata->Add(glTF2Variants::MeshDefaultMaterialKey(aiMeshIndex), static_cast<int32_t>(mScene->mMeshes[aiMeshIndex]->mMaterialIndex));
+            for (size_t v = 0; v < prim.materialVariants.size(); ++v) {
+                if (prim.materialVariants[v]) {
+                    metadata->Add(glTF2Variants::MeshVariantMaterialKey(aiMeshIndex, static_cast<unsigned int>(v)),
+                            static_cast<int32_t>(prim.materialVariants[v].GetIndex()));
+                }
+            }
         }
     }
 }

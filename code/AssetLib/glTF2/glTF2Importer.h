@@ -76,6 +76,7 @@ private:
     void ImportNodes(glTF2::Asset &a);
     void ImportAnimations(glTF2::Asset &a);
     void ImportCommonMetadata(glTF2::Asset &a);
+    void ImportMaterialVariantsMetadata(glTF2::Asset &a);
     aiNode *ImportNode(glTF2::Asset &r, glTF2::Ref<glTF2::Node> &ptr);
 
 private:

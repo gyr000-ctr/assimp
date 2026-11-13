@@ -53,6 +53,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *   KHR_materials_ior: full
  *   KHR_materials_emissive_strength: full
  *   KHR_materials_anisotropy: full
+ *   KHR_materials_variants: full
  */
 #ifndef GLTF2ASSETWRITER_H_INC
 #define GLTF2ASSETWRITER_H_INC
@@ -75,6 +76,7 @@ private:
 
     void WriteMetadata();
     void WriteExtensionsUsed();
+    void WriteExtensions();
 
     template<class T>
     void WriteObjects(LazyDict<T>& d);

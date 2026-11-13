@@ -1567,6 +1567,58 @@ inline void Mesh::Read(Value &pJSON_Object, Asset &pAsset_Root) {
                 prim.material = pAsset_Root.materials.Retrieve(material->GetUint());
             }
 
+            // KHR_materials_variants: per-primitive variant -> material mappings.
+            // The default material above is left untouched; variants are opt-in.
+            if (Value *variantsExt = FindExtension(primitive, "KHR_materials_variants")) {
+                if (pAsset_Root.materialVariantNames.empty()) {
+                    ASSIMP_LOG_WARN("GLTF: Primitive ", i, " in mesh ", getContextForErrorMessages(id, name),
+                            " uses KHR_materials_variants mappings, but no variants are declared at the asset root. The mappings are ignored.");
+                } else if (Value *mappings = FindArray(*variantsExt, "mappings")) {
+                    prim.materialVariants.resize(pAsset_Root.materialVariantNames.size());
+                    for (unsigned int m = 0; m < mappings->Size(); ++m) {
+                        Value &mapping = (*mappings)[m];
+                        if (!mapping.IsObject()) {
+                            continue;
+                        }
+
+                        Value *mappingMaterial = FindUInt(mapping, "material");
+                        if (nullptr == mappingMaterial) {
+                            ASSIMP_LOG_WARN("GLTF: KHR_materials_variants mapping ", m, " in mesh \"", name, "\" primitive ", i, " has no \"material\" index. The mapping is ignored.");
+                            continue;
+                        }
+
+                        const unsigned int materialIndex = mappingMaterial->GetUint();
+                        if (materialIndex >= pAsset_Root.materials.DictSize()) {
+                            // Safe fallback for an out-of-range material index: skip this mapping
+                            // instead of failing the whole import.
+                            ASSIMP_LOG_WARN("GLTF: KHR_materials_variants mapping ", m, " in mesh \"", name, "\" primitive ", i, " references material index ", materialIndex,
+                                    ", but only ", pAsset_Root.materials.DictSize(), " materials exist. The mapping is ignored.");
+                            continue;
+                        }
+
+                        Value *mappingVariants = FindArray(mapping, "variants");
+                        if (nullptr == mappingVariants) {
+                            ASSIMP_LOG_WARN("GLTF: KHR_materials_variants mapping ", m, " in mesh \"", name, "\" primitive ", i, " has no \"variants\" array. The mapping is ignored.");
+                            continue;
+                        }
+
+                        Ref<Material> variantMaterial = pAsset_Root.materials.Retrieve(materialIndex);
+                        for (unsigned int k = 0; k < mappingVariants->Size(); ++k) {
+                            if (!(*mappingVariants)[k].IsUint()) {
+                                continue;
+                            }
+                            const unsigned int variantIndex = (*mappingVariants)[k].GetUint();
+                            if (variantIndex >= prim.materialVariants.size()) {
+                                ASSIMP_LOG_WARN("GLTF: KHR_materials_variants mapping ", m, " in mesh \"", name, "\" primitive ", i, " references variant index ", variantIndex,
+                                        ", but only ", prim.materialVariants.size(), " variants are declared. The entry is ignored.");
+                                continue;
+                            }
+                            prim.materialVariants[variantIndex] = variantMaterial;
+                        }
+                    }
+                }
+            }
+
             if (Value *attrs = FindObject(primitive, "attributes")) {
                 for (Value::MemberIterator it = attrs->MemberBegin(); it != attrs->MemberEnd(); ++it) {
                     if (!it->value.IsUint()) continue;
@@ -2150,6 +2202,7 @@ inline void Asset::Load(const std::string &pFile, bool isBinary)
     asset.Read(doc);
     ReadExtensionsUsed(doc);
     ReadExtensionsRequired(doc);
+    ReadMaterialVariants(doc);
 
 #ifndef ASSIMP_ENABLE_DRACO
     // Is Draco required?
@@ -2274,11 +2327,57 @@ inline void Asset::ReadExtensionsUsed(Document &doc) {
     CHECK_EXT(KHR_materials_ior);
     CHECK_EXT(KHR_materials_emissive_strength);
     CHECK_EXT(KHR_materials_anisotropy);
+    CHECK_EXT(KHR_materials_variants);
     CHECK_EXT(KHR_draco_mesh_compression);
     CHECK_EXT(KHR_texture_basisu);
     CHECK_EXT(EXT_texture_webp);
 
 #undef CHECK_EXT
+}
+
+inline void Asset::ReadMaterialVariants(Document &doc) {
+    Value *extensions = FindObject(doc, "extensions");
+    if (nullptr == extensions) {
+        return;
+    }
+
+    Value *variantsExt = FindObject(*extensions, "KHR_materials_variants");
+    if (nullptr == variantsExt) {
+        return;
+    }
+
+    if (!extensionsUsed.KHR_materials_variants) {
+        // Safe fallback: the extension data is present but was not declared in
+        // "extensionsUsed". Keep the data instead of silently dropping it.
+        ASSIMP_LOG_WARN("GLTF: KHR_materials_variants extension data found, but the extension is not declared in \"extensionsUsed\". Importing it anyway.");
+        extensionsUsed.KHR_materials_variants = true;
+    }
+
+    Value *variants = FindArray(*variantsExt, "variants");
+    if (nullptr == variants) {
+        ASSIMP_LOG_WARN("GLTF: KHR_materials_variants extension without a \"variants\" array. The extension is ignored.");
+        return;
+    }
+
+    for (unsigned int i = 0; i < variants->Size(); ++i) {
+        Value &variant = (*variants)[i];
+        std::string name;
+        if (variant.IsObject()) {
+            if (Value *curName = FindMember(variant, "name"); nullptr != curName && curName->IsString()) {
+                name = curName->GetString();
+            }
+        }
+        // Safe fallback for duplicate names: keep the declaration order (variant indices are
+        // referenced by the primitive mappings, so entries must not be dropped) and let
+        // name-based lookups resolve to the first occurrence.
+        for (size_t j = 0; j < materialVariantNames.size(); ++j) {
+            if (materialVariantNames[j] == name) {
+                ASSIMP_LOG_WARN("GLTF: Duplicate KHR_materials_variants variant name \"", name, "\" at index ", i, ". Name-based lookups will use the first occurrence (index ", j, ").");
+                break;
+            }
+        }
+        materialVariantNames.push_back(name);
+    }
 }
 
 inline IOStream *Asset::OpenFile(const std::string &path, const char *mode, bool /*absolute*/) {

@@ -54,6 +54,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *   KHR_materials_ior full
  *   KHR_materials_emissive_strength full
  *   KHR_materials_anisotropy full
+ *   KHR_materials_variants full
  */
 #ifndef GLTF2ASSET_H_INC
 #define GLTF2ASSET_H_INC
@@ -891,6 +892,12 @@ struct Mesh : public Object {
 
         Ref<Material> material;
 
+        // extension: KHR_materials_variants
+        //! Maps a variant index (see Asset::materialVariantNames) to the material to be used
+        //! when that variant is active. Entries without a mapping stay null, in which case
+        //! the default material above applies. Empty when the extension is not used.
+        std::vector<Ref<Material>> materialVariants;
+
         struct Target {
             AccessorList position, normal, tangent;
         };
@@ -1086,6 +1093,10 @@ public:
 
     inline unsigned int Size() const { return unsigned(mObjs.size()); }
 
+    //! Number of entries in the attached JSON dictionary, 0 when not attached or not an array.
+    //! Unlike Size() this also counts objects that have not been retrieved yet.
+    inline unsigned int DictSize() const { return (mDict != nullptr && mDict->IsArray()) ? unsigned(mDict->Size()) : 0; }
+
     inline T &operator[](size_t i) { return *mObjs[i]; }
 };
 
@@ -1135,6 +1146,7 @@ public:
         bool KHR_materials_ior{false};
         bool KHR_materials_emissive_strength{false};
         bool KHR_materials_anisotropy{false};
+        bool KHR_materials_variants{false};
         bool KHR_draco_mesh_compression{false};
         bool FB_ngon_encoding{false};
         bool KHR_texture_basisu{false};
@@ -1174,6 +1186,12 @@ public:
     LazyDict<Texture> textures;
 
     Ref<Scene> scene;
+
+    // extension: KHR_materials_variants
+    //! Names of the material variants declared at the asset root, in declaration order.
+    //! Empty when the extension is not used. Per-primitive variant -> material mappings
+    //! are stored in Mesh::Primitive::materialVariants, indexed into this list.
+    std::vector<std::string> materialVariantNames;
 
 public:
     Asset(IOSystem *io = nullptr, rapidjson::IRemoteSchemaDocumentProvider *schemaDocumentProvider = nullptr) :
@@ -1228,6 +1246,9 @@ private:
 
     void ReadExtensionsUsed(Document &doc);
     void ReadExtensionsRequired(Document &doc);
+
+    //! Reads the KHR_materials_variants root extension (variant names) into materialVariantNames.
+    void ReadMaterialVariants(Document &doc);
 
     IOStream *OpenFile(const std::string &path, const char *mode, bool absolute = false);
 

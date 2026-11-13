@@ -126,6 +126,7 @@ protected:
     bool GetMatEmissiveStrength(const aiMaterial &mat, glTF2::MaterialEmissiveStrength &emissiveStrength);
     bool GetMatAnisotropy(const aiMaterial &mat, glTF2::MaterialAnisotropy &anisotropy);
     void ExportMetadata();
+    void ExportMaterialVariants();
     void ExportMaterials();
     void ExportMeshes();
     void MergeMeshes();
