@@ -43,6 +43,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "AssetLib/glTF2/glTF2Exporter.h"
 #include "AssetLib/glTF2/glTF2AssetWriter.h"
+#include "Common/PolygonTriangulate.h"
 #include "PostProcessing/SplitLargeMeshes.h"
 
 #include <assimp/ByteSwapper.h>
@@ -119,6 +120,20 @@ glTF2Exporter::glTF2Exporter(const char *filename, IOSystem *pIOSystem, const ai
         mAsset->SetAsBinary();
     }
 
+    // Node hierarchy is exported before the meshes themselves, but node
+    // mesh references resolve lazily. Pre-compute which aiScene meshes
+    // will produce an exportable glTF mesh: a mesh without faces (which
+    // happens when e.g. every face of a polygon mesh was degenerate and
+    // got dropped during triangulation) has no representation and node
+    // references to it must be skipped. The Ref objects are filled in by
+    // ExportMeshes().
+    mMeshIndexMap.assign(mScene->mNumMeshes, Ref<Mesh>());
+    for (unsigned int i = 0; i < mScene->mNumMeshes; ++i) {
+        if (mScene->mMeshes[i] != nullptr && mScene->mMeshes[i]->mNumFaces > 0) {
+            mMeshIndexMap[i] = mAsset->meshes.Create(
+                    mAsset->FindUniqueID(mScene->mMeshes[i]->mName.C_Str(), "mesh"));
+        }
+    }
     ExportMetadata();
 
     ExportMaterials();
@@ -1136,42 +1151,47 @@ void ExportSkin(Asset &mAsset, const aiMesh *aimesh, Ref<Mesh> &meshRef, Ref<Buf
     }
 
     for (size_t idx_group = 0; idx_group < numGroups; ++idx_group) {
-        Mesh::Primitive &p = meshRef->primitives.back();
-        Ref<Accessor> vertexJointAccessor = ExportData(
-            mAsset, skinRef->id, bufferRef, aimesh->mNumVertices,
-            vertexJointData + idx_group * NumVerts,
-            AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT);
-        if (vertexJointAccessor) {
-            size_t offset = vertexJointAccessor->bufferView->byteOffset;
-            size_t bytesLen = vertexJointAccessor->bufferView->byteLength;
-            unsigned int s_bytesPerComp =
-                ComponentTypeSize(ComponentType_UNSIGNED_SHORT);
-            unsigned int bytesPerComp =
-                ComponentTypeSize(vertexJointAccessor->componentType);
-            size_t s_bytesLen = bytesLen * s_bytesPerComp / bytesPerComp;
-            Ref<Buffer> buf = vertexJointAccessor->bufferView->buffer;
-            uint8_t *arrys = new uint8_t[bytesLen];
-            unsigned int i = 0;
-            for (unsigned int j = 0; j < bytesLen; j += bytesPerComp) {
-                size_t len_p = offset + j;
-                float f_value = *(float *)&buf->GetPointer()[len_p];
-                unsigned short c = static_cast<unsigned short>(f_value);
-                memcpy(&arrys[i * s_bytesPerComp], &c, s_bytesPerComp);
-                ++i;
-            }
-            buf->ReplaceData_joint(offset, bytesLen, arrys, bytesLen);
-            vertexJointAccessor->componentType = ComponentType_UNSIGNED_SHORT;
-            vertexJointAccessor->bufferView->byteLength = s_bytesLen;
+        // A mesh may contain several primitives (e.g. a mesh mixing
+        // points, lines and triangulated polygons); skin attributes are
+        // per-vertex and must be attached to every one of them.
+        for (size_t idx_primitive = 0; idx_primitive < meshRef->primitives.size(); ++idx_primitive) {
+            Mesh::Primitive &p = meshRef->primitives[idx_primitive];
+            Ref<Accessor> vertexJointAccessor = ExportData(
+                mAsset, skinRef->id, bufferRef, aimesh->mNumVertices,
+                vertexJointData + idx_group * NumVerts,
+                AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT);
+            if (vertexJointAccessor) {
+                size_t offset = vertexJointAccessor->bufferView->byteOffset;
+                size_t bytesLen = vertexJointAccessor->bufferView->byteLength;
+                unsigned int s_bytesPerComp =
+                    ComponentTypeSize(ComponentType_UNSIGNED_SHORT);
+                unsigned int bytesPerComp =
+                    ComponentTypeSize(vertexJointAccessor->componentType);
+                size_t s_bytesLen = bytesLen * s_bytesPerComp / bytesPerComp;
+                Ref<Buffer> buf = vertexJointAccessor->bufferView->buffer;
+                uint8_t *arrys = new uint8_t[bytesLen];
+                unsigned int i = 0;
+                for (unsigned int j = 0; j < bytesLen; j += bytesPerComp) {
+                    size_t len_p = offset + j;
+                    float f_value = *(float *)&buf->GetPointer()[len_p];
+                    unsigned short c = static_cast<unsigned short>(f_value);
+                    memcpy(&arrys[i * s_bytesPerComp], &c, s_bytesPerComp);
+                    ++i;
+                }
+                buf->ReplaceData_joint(offset, bytesLen, arrys, bytesLen);
+                vertexJointAccessor->componentType = ComponentType_UNSIGNED_SHORT;
+                vertexJointAccessor->bufferView->byteLength = s_bytesLen;
 
-            p.attributes.joint.push_back(vertexJointAccessor);
-            delete[] arrys;
-        }
-        Ref<Accessor> vertexWeightAccessor = ExportData(
-            mAsset, skinRef->id, bufferRef, aimesh->mNumVertices,
-            vertexWeightData + idx_group * NumVerts,
-            AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT);
-        if (vertexWeightAccessor) {
-            p.attributes.weight.push_back(vertexWeightAccessor);
+                p.attributes.joint.push_back(vertexJointAccessor);
+                delete[] arrys;
+            }
+            Ref<Accessor> vertexWeightAccessor = ExportData(
+                mAsset, skinRef->id, bufferRef, aimesh->mNumVertices,
+                vertexWeightData + idx_group * NumVerts,
+                AttribType::VEC4, AttribType::VEC4, ComponentType_FLOAT);
+            if (vertexWeightAccessor) {
+                p.attributes.weight.push_back(vertexWeightAccessor);
+            }
         }
     }
     delete[] jointsPerVertex;
@@ -1214,21 +1234,24 @@ void glTF2Exporter::ExportMeshes() {
 
     for (unsigned int idx_mesh = 0; idx_mesh < mScene->mNumMeshes; ++idx_mesh) {
         const aiMesh *aim = mScene->mMeshes[idx_mesh];
-        if (aim->mNumFaces == 0) {
+        if (aim == nullptr || aim->mNumFaces == 0 || !mMeshIndexMap[idx_mesh]) {
+            ASSIMP_LOG_WARN("glTF2 exporter: skipped a mesh without exportable faces");
             continue;
         }
 
         std::string name = aim->mName.C_Str();
 
-        std::string meshId = mAsset->FindUniqueID(name, "mesh");
-        Ref<Mesh> m = mAsset->meshes.Create(meshId);
+        // The mesh entry was pre-created before node hierarchy export so
+        // that nodes can hold lazy references to it.
+        Ref<Mesh> m = mMeshIndexMap[idx_mesh];
         m->primitives.resize(1);
         Mesh::Primitive &p = m->primitives.back();
 
         m->name = name;
+        std::string meshId = m->id;
 
         p.material = mAsset->materials.Get(aim->mMaterialIndex);
-        p.ngonEncoded = (aim->mPrimitiveTypes & aiPrimitiveType_NGONEncodingFlag) != 0;
+        // ngon encoding is decided when the index primitive is built below
 
         /******************* Vertices ********************/
         Ref<Accessor> v = ExportData(*mAsset, meshId, b, aim->mNumVertices, aim->mVertices, AttribType::VEC3,
@@ -1312,46 +1335,127 @@ void glTF2Exporter::ExportMeshes() {
 
         /*************** Vertices indices ****************/
         if (aim->mNumFaces > 0) {
-            unsigned int nIndicesPerFace = aim->mFaces[0].mNumIndices;
-            unsigned int nIndices = aim->mNumFaces * nIndicesPerFace;
-            if (aim->mNumVertices <= std::numeric_limits<unsigned short>::max()) {
-                std::vector<IndicesShortType> indices;
-                indices.resize(nIndices);
-                for (size_t i = 0; i < aim->mNumFaces; ++i) {
-                    for (size_t j = 0; j < nIndicesPerFace; ++j) {
-                        indices[i * nIndicesPerFace + j] = IndicesShortType(aim->mFaces[i].mIndices[j]);
-                    }
+            // glTF primitives require a uniform draw mode and a flat index
+            // stream. A single aiMesh may mix points, lines and polygons,
+            // so the faces are grouped by the glTF mode they map to.
+            // Polygon faces are triangulated on the fly: this mirrors
+            // aiProcess_Triangulate exactly (both call the shared
+            // PolygonTriangulation helper), therefore no pre-triangulation
+            // by the caller is required.
+            enum ModeGroup : unsigned char {
+                GROUP_POINTS = 0,
+                GROUP_LINES = 1,
+                GROUP_TRIANGLES = 2,
+                GROUP_COUNT = 3
+            };
+            static const PrimitiveMode kGroupMode[GROUP_COUNT] = {
+                    PrimitiveMode_POINTS, PrimitiveMode_LINES, PrimitiveMode_TRIANGLES};
+
+            std::vector<IndicesType> groupIndices[GROUP_COUNT];
+            for (unsigned int g = 0; g < GROUP_COUNT; ++g) {
+                groupIndices[g].reserve(aim->mNumFaces * 2);
+            }
+
+            std::vector<aiVector3D> scratch3D;
+            std::vector<std::vector<aiVector2D>> scratch2D;
+            std::vector<unsigned int> triIndices;
+
+            for (unsigned int faceIdx = 0; faceIdx < aim->mNumFaces; ++faceIdx) {
+                const aiFace &face = aim->mFaces[faceIdx];
+                if (face.mNumIndices == 0 || face.mIndices == nullptr) {
+                    continue;
                 }
 
-                p.indices = ExportData(*mAsset, meshId, b, indices.size(), &indices[0], AttribType::SCALAR, AttribType::SCALAR,
-                        ComponentType_UNSIGNED_SHORT, BufferViewTarget_ELEMENT_ARRAY_BUFFER);
-            } else {
-                std::vector<IndicesType> indices;
-                indices.resize(nIndices);
-                for (size_t i = 0; i < aim->mNumFaces; ++i) {
-                    for (size_t j = 0; j < nIndicesPerFace; ++j) {
-                        indices[i * nIndicesPerFace + j] = IndicesType(aim->mFaces[i].mIndices[j]);
+                if (face.mNumIndices == 1) {
+                    groupIndices[GROUP_POINTS].push_back(face.mIndices[0]);
+                } else if (face.mNumIndices == 2) {
+                    groupIndices[GROUP_LINES].push_back(face.mIndices[0]);
+                    groupIndices[GROUP_LINES].push_back(face.mIndices[1]);
+                } else if (face.mNumIndices == 3) {
+                    // Triangles pass through unchanged to keep the output
+                    // compatible with already-triangulated input.
+                    groupIndices[GROUP_TRIANGLES].push_back(face.mIndices[0]);
+                    groupIndices[GROUP_TRIANGLES].push_back(face.mIndices[1]);
+                    groupIndices[GROUP_TRIANGLES].push_back(face.mIndices[2]);
+                } else {
+                    // Polygon: robust ear-cut triangulation. Winding and
+                    // vertex indices are preserved; degenerate faces are
+                    // skipped with a warning, no zero-area triangle is
+                    // ever written.
+                    const PolygonTriangulation::Result result = PolygonTriangulation::TriangulateFace(
+                            aim->mVertices, face.mIndices, face.mNumIndices, triIndices, scratch3D, scratch2D);
+                    if (result != PolygonTriangulation::Result::Success) {
+                        ASSIMP_LOG_WARN(
+                                "glTF2 exporter: skipped a degenerate or invalid polygon face that could not be triangulated");
+                        continue;
+                    }
+                    for (unsigned int localIdx : triIndices) {
+                        groupIndices[GROUP_TRIANGLES].push_back(face.mIndices[localIdx]);
                     }
                 }
+            }
 
-                p.indices = ExportData(*mAsset, meshId, b, indices.size(), &indices[0], AttribType::SCALAR, AttribType::SCALAR,
-                        ComponentType_UNSIGNED_INT, BufferViewTarget_ELEMENT_ARRAY_BUFFER);
+            // Build one primitive per non-empty mode group. The original
+            // primitive (p, created above and carrying all vertex
+            // attributes) is reused for the first populated group;
+            // additional groups are appended to the same mesh.
+            bool firstGroup = true;
+            const bool useShortIndices = aim->mNumVertices <= std::numeric_limits<unsigned short>::max();
+            for (unsigned int g = 0; g < GROUP_COUNT; ++g) {
+                if (groupIndices[g].empty()) {
+                    continue;
+                }
+
+                Mesh::Primitive &target = firstGroup ? p : m->primitives.emplace_back();
+                firstGroup = false;
+                target.mode = kGroupMode[g];
+                target.material = mAsset->materials.Get(aim->mMaterialIndex);
+                // The exporter emits plain glTF triangles; ngon encoding
+                // is only meaningful when aiProcess_Triangulate produced
+                // the index stream itself.
+                target.ngonEncoded = false;
+
+                if (useShortIndices) {
+                    std::vector<IndicesShortType> shortIndices;
+                    shortIndices.resize(groupIndices[g].size());
+                    for (size_t i = 0; i < groupIndices[g].size(); ++i) {
+                        shortIndices[i] = static_cast<IndicesShortType>(groupIndices[g][i]);
+                    }
+                    target.indices = ExportData(*mAsset, meshId, b, shortIndices.size(), &shortIndices[0],
+                            AttribType::SCALAR, AttribType::SCALAR, ComponentType_UNSIGNED_SHORT,
+                            BufferViewTarget_ELEMENT_ARRAY_BUFFER);
+                } else {
+                    target.indices = ExportData(*mAsset, meshId, b, groupIndices[g].size(),
+                            groupIndices[g].data(), AttribType::SCALAR, AttribType::SCALAR,
+                            ComponentType_UNSIGNED_INT, BufferViewTarget_ELEMENT_ARRAY_BUFFER);
+                }
+
+                // Every mode group references the same vertex streams, so
+                // share the attribute accessors built for the first
+                // primitive instead of duplicating the buffer data.
+                if (&target != &p) {
+                    target.attributes = p.attributes;
+                }
             }
         }
 
-        switch (aim->mPrimitiveTypes) {
-        case aiPrimitiveType_POLYGON:
-            p.mode = PrimitiveMode_TRIANGLES;
-            break; // TODO implement this
-        case aiPrimitiveType_LINE:
-            p.mode = PrimitiveMode_LINES;
-            break;
-        case aiPrimitiveType_POINT:
-            p.mode = PrimitiveMode_POINTS;
-            break;
-        default: // aiPrimitiveType_TRIANGLE
-            p.mode = PrimitiveMode_TRIANGLES;
-            break;
+        // Mode selection for indexed geometry is handled per mode group
+        // above (points/lines/triangles). The only remaining case is a
+        // mesh without any exportable index buffer, which defaults to
+        // triangles to match the previous behavior for index-free
+        // primitives.
+        if (!p.indices) {
+            switch (aim->mPrimitiveTypes) {
+            case aiPrimitiveType_LINE:
+                p.mode = PrimitiveMode_LINES;
+                break;
+            case aiPrimitiveType_POINT:
+                p.mode = PrimitiveMode_POINTS;
+                break;
+            default:
+                p.mode = PrimitiveMode_TRIANGLES;
+                break;
+            }
         }
 
 //        /*************** Skins ****************/
@@ -1550,7 +1654,14 @@ unsigned int glTF2Exporter::ExportNodeHierarchy(const aiNode *n) {
     }
 
     for (unsigned int i = 0; i < n->mNumMeshes; ++i) {
-        node->meshes.emplace_back(mAsset->meshes.Get(n->mMeshes[i]));
+        const unsigned int meshIdx = n->mMeshes[i];
+        if (meshIdx >= mMeshIndexMap.size() || !mMeshIndexMap[meshIdx]) {
+            // The mesh produced no exportable primitive (e.g. all faces
+            // were degenerate); drop the reference instead of exporting
+            // an invalid mesh pointer.
+            continue;
+        }
+        node->meshes.emplace_back(mMeshIndexMap[meshIdx]);
     }
 
     for (unsigned int i = 0; i < n->mNumChildren; ++i) {
@@ -1603,7 +1714,14 @@ unsigned int glTF2Exporter::ExportNode(const aiNode *n, Ref<Node> &parent) {
     }
 
     for (unsigned int i = 0; i < n->mNumMeshes; ++i) {
-        node->meshes.emplace_back(mAsset->meshes.Get(n->mMeshes[i]));
+        const unsigned int meshIdx = n->mMeshes[i];
+        if (meshIdx >= mMeshIndexMap.size() || !mMeshIndexMap[meshIdx]) {
+            // The mesh produced no exportable primitive (e.g. all faces
+            // were degenerate); drop the reference instead of exporting
+            // an invalid mesh pointer.
+            continue;
+        }
+        node->meshes.emplace_back(mMeshIndexMap[meshIdx]);
     }
 
     for (unsigned int i = 0; i < n->mNumChildren; ++i) {

@@ -62,7 +62,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "PostProcessing/TriangulateProcess.h"
 #include "PostProcessing/ProcessHelper.h"
 #include "Common/PolyTools.h"
-#include "contrib/earcut-hpp/earcut.hpp"
+#include "Common/PolygonTriangulate.h"
 
 #include <memory>
 #include <cstdint>
@@ -70,27 +70,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //#define AI_BUILD_TRIANGULATE_COLOR_FACE_WINDING
 //#define AI_BUILD_TRIANGULATE_DEBUG_POLYS
 
-#define POLY_GRID_Y 40
-#define POLY_GRID_X 70
-#define POLY_GRID_XPAD 20
 #define POLY_OUTPUT_FILE "assimp_polygons_debug.txt"
-
-namespace mapbox::util {
-
-template <>
-struct nth<0, aiVector2D> {
-    inline static auto get(const aiVector2D& t) {
-        return t.x;
-    }
-};
-template <>
-struct nth<1, aiVector2D> {
-    inline static auto get(const aiVector2D& t) {
-        return t.y;
-    }
-};
-
-} // namespace mapbox::util
 
 using namespace Assimp;
 
@@ -222,35 +202,25 @@ bool TriangulateProcess::TriangulateMesh( aiMesh* pMesh) {
         return false;
     }
 
-    // Find out how many output faces we'll get
-    uint32_t numOut = 0, max_out = 0;
-    bool get_normals = true;
+    // Upper bound for the number of output faces. Degenerate polygon
+    // faces may reduce the actual count, so the output array is sized for
+    // the worst case.
+    uint32_t numOut = 0;
     for( unsigned int a = 0; a < pMesh->mNumFaces; a++) {
         aiFace& face = pMesh->mFaces[a];
-        if (face.mNumIndices <= 4) {
-            get_normals = false;
-        }
         if( face.mNumIndices <= 3) {
             ++numOut;
         } else {
             numOut += face.mNumIndices-2;
-            max_out = std::max<uint32_t>(max_out,face.mNumIndices);
         }
     }
 
-    // Just another check whether aiMesh::mPrimitiveTypes is correct
+    // Just another check whether aiMesh::mPrimitiveTypes is correct:
+    // if every face is already a point, line or triangle there is no
+    // polygon work to do here.
     if (numOut == pMesh->mNumFaces) {
         ASSIMP_LOG_ERROR( "Invalidation detected in the number of indices: does not fit to the primitive type." );
         return false;
-    }
-
-    aiVector3D *nor_out = nullptr;
-
-    // if we don't have normals yet, but expect them to be a cheap side
-    // product of triangulation anyway, allocate storage for them.
-    if (!pMesh->mNormals && get_normals) {
-        // XXX need a mechanism to inform the GenVertexNormals process to treat these normals as preprocessed per-face normals
-    //  nor_out = pMesh->mNormals = new aiVector3D[pMesh->mNumVertices];
     }
 
     // the output mesh will contain triangles, but no polys anymore
@@ -261,10 +231,9 @@ bool TriangulateProcess::TriangulateMesh( aiMesh* pMesh) {
     pMesh->mPrimitiveTypes |= aiPrimitiveType_NGONEncodingFlag;
 
     aiFace* out = new aiFace[numOut](), *curOut = out;
-    std::vector<aiVector3D> temp_verts3d(max_out+2); /* temporary storage for vertices */
-    std::vector<std::vector<aiVector2D>> temp_poly(1); /* temporary storage for earcut.hpp */
-    std::vector<aiVector2D>& temp_verts = temp_poly[0];
-    temp_verts.reserve(max_out + 2);
+    std::vector<aiVector3D> temp_verts3d; /* temporary storage for the shared triangulator */
+    std::vector<std::vector<aiVector2D>> temp_poly; /* temporary storage for earcut.hpp */
+    std::vector<unsigned int> triIndices; /* triangulator output, indices into the face */
 
     NGONEncoder ngonEncoder;
 
@@ -294,7 +263,7 @@ bool TriangulateProcess::TriangulateMesh( aiMesh* pMesh) {
 #ifdef AI_BUILD_TRIANGULATE_COLOR_FACE_WINDING
         for (unsigned int i = 0; i < face.mNumIndices; ++i) {
             aiColor4D& c = clr[idx[i]];
-            c.r = (i+1) / (float)max;
+            c.r = (i+1) / static_cast<float>(face.mNumIndices);
             c.b = 1.f - c.r;
         }
 #endif
@@ -314,177 +283,49 @@ bool TriangulateProcess::TriangulateMesh( aiMesh* pMesh) {
 
             continue;
         }
-        // optimized code for quadrilaterals
-        else if ( face.mNumIndices == 4) {
-
-            // quads can have at maximum one concave vertex. Determine
-            // this vertex (if it exists) and start tri-fanning from
-            // it.
-            unsigned int start_vertex = 0;
-            for (unsigned int i = 0; i < 4; ++i) {
-                const aiVector3D& v0 = verts[face.mIndices[(i+3) % 4]];
-                const aiVector3D& v1 = verts[face.mIndices[(i+2) % 4]];
-                const aiVector3D& v2 = verts[face.mIndices[(i+1) % 4]];
-
-                const aiVector3D& v = verts[face.mIndices[i]];
-
-                aiVector3D left = (v0-v);
-                aiVector3D diag = (v1-v);
-                aiVector3D right = (v2-v);
-
-                left.Normalize();
-                diag.Normalize();
-                right.Normalize();
-
-                const float angle = std::acos(left*diag) + std::acos(right*diag);
-                if (angle > AI_MATH_PI_F) {
-                    // this is the concave point
-                    start_vertex = i;
-                    break;
-                }
-            }
-
-            const unsigned int temp[] = {face.mIndices[0], face.mIndices[1], face.mIndices[2], face.mIndices[3]};
-
-            aiFace& nface = *curOut++;
-            nface.mNumIndices = 3;
-            nface.mIndices = face.mIndices;
-
-            nface.mIndices[0] = temp[start_vertex];
-            nface.mIndices[1] = temp[(start_vertex + 1) % 4];
-            nface.mIndices[2] = temp[(start_vertex + 2) % 4];
-
-            aiFace& sface = *curOut++;
-            sface.mNumIndices = 3;
-            sface.mIndices = new unsigned int[3];
-
-            sface.mIndices[0] = temp[start_vertex];
-            sface.mIndices[1] = temp[(start_vertex + 2) % 4];
-            sface.mIndices[2] = temp[(start_vertex + 3) % 4];
-
-            // prevent double deletion of the indices field
+        // A polygon with at least four vertices can be either concave or
+        // convex, clockwise or counter-clockwise. Both quads and larger
+        // n-gons go through the shared ear-cutting triangulator so that
+        // the export path makes identical decisions (see
+        // Common/PolygonTriangulate.h).
+        const PolygonTriangulation::Result triResult = PolygonTriangulation::TriangulateFace(
+                verts, idx, num, triIndices, temp_verts3d, temp_poly);
+        if (triResult != PolygonTriangulation::Result::Success) {
+            ASSIMP_LOG_WARN("TriangulateProcess: skipped a degenerate or invalid polygon face");
+            delete[] face.mIndices;
             face.mIndices = nullptr;
-
-            ngonEncoder.ngonEncodeQuad(&nface, &sface);
-
             continue;
         }
-        else
-        {
-            // A polygon with more than 3 vertices can be either concave or convex.
-            // Usually everything we're getting is convex and we could easily
-            // triangulate by tri-fanning. However, LightWave is probably the only
-            // modeling suite to make extensive use of highly concave, monster polygons ...
-            // so we need to apply the full 'ear cutting' algorithm to get it right.
 
-            // REQUIREMENT: polygon is expected to be simple and *nearly* planar.
-            // We project it onto a plane to get a 2d triangle.
-
-            // Collect all vertices of of the polygon.
-            for (unsigned int tmp = 0; tmp < num; ++tmp) {
-                temp_verts3d[tmp] = verts[idx[tmp]];
-            }
-
-            // Get newell normal of the polygon. Store it for future use if it's a polygon-only mesh
-            aiVector3D n;
-            NewellNormal<3, 3, 3>(n, num, &temp_verts3d.front().x, &temp_verts3d.front().y, &temp_verts3d.front().z);
-            if (nor_out) {
-                for (unsigned int tmp = 0; tmp < num; ++tmp)
-                    nor_out[idx[tmp]] = n;
-            }
-
-            // Select largest normal coordinate to ignore for projection
-            const float ax = (n.x>0 ? n.x : -n.x);
-            const float ay = (n.y>0 ? n.y : -n.y);
-            const float az = (n.z>0 ? n.z : -n.z);
-
-            unsigned int ac = 0, bc = 1; /* no z coord. projection to xy */
-            float inv = n.z;
-            if (ax > ay) {
-                if (ax > az) { /* no x coord. projection to yz */
-                    ac = 1; bc = 2;
-                    inv = n.x;
-                }
-            }
-            else if (ay > az) { /* no y coord. projection to zy */
-                ac = 2; bc = 0;
-                inv = n.y;
-            }
-
-            // Swap projection axes to take the negated projection vector into account
-            if (inv < 0.f) {
-                std::swap(ac,bc);
-            }
-
-            temp_verts.resize(num);
-            for (unsigned int tmp = 0; tmp < num; ++tmp) {
-                temp_verts[tmp].x = verts[idx[tmp]][ac];
-                temp_verts[tmp].y = verts[idx[tmp]][bc];
-            }
-
-            auto indices = mapbox::earcut(temp_poly);
-            for (size_t i = 0; i < indices.size(); i += 3) {
-                aiFace& nface = *curOut++;
-                nface.mIndices = new unsigned int[3];
-                nface.mNumIndices = 3;
-                nface.mIndices[0] = indices[i];
-                nface.mIndices[1] = indices[i + 1];
-                nface.mIndices[2] = indices[i + 2];
-            }
-
-#ifdef AI_BUILD_TRIANGULATE_DEBUG_POLYS
-            // plot the plane onto which we mapped the polygon to a 2D ASCII pic
-            aiVector2D bmin,bmax;
-            ArrayBounds(&temp_verts[0],max,bmin,bmax);
-
-            char grid[POLY_GRID_Y][POLY_GRID_X+POLY_GRID_XPAD];
-            std::fill_n((char*)grid,POLY_GRID_Y*(POLY_GRID_X+POLY_GRID_XPAD),' ');
-
-            for (int i =0; i < max; ++i) {
-                const aiVector2D& v = (temp_verts[i] - bmin) / (bmax-bmin);
-                const size_t x = static_cast<size_t>(v.x*(POLY_GRID_X-1)), y = static_cast<size_t>(v.y*(POLY_GRID_Y-1));
-                char* loc = grid[y]+x;
-                if (grid[y][x] != ' ') {
-                    for(;*loc != ' '; ++loc);
-                    *loc++ = '_';
-                }
-                *(loc+::ai_snprintf(loc, POLY_GRID_XPAD,"%i",i)) = ' ';
-            }
-
-
-            for(size_t y = 0; y < POLY_GRID_Y; ++y) {
-                grid[y][POLY_GRID_X+POLY_GRID_XPAD-1] = '\0';
-                fprintf(fout,"%s\n",grid[y]);
-            }
-
-            fprintf(fout,"\ntriangulation sequence: ");
-#endif
+        // Emit the triangles. The indices returned by the triangulator
+        // refer to positions inside the face's own index sequence, so map
+        // them back to mesh vertex indices below.
+        for (size_t t = 0; t + 2 < triIndices.size(); t += 3) {
+            aiFace &nface = *curOut++;
+            nface.mIndices = new unsigned int[3];
+            nface.mNumIndices = 3;
+            nface.mIndices[0] = idx[triIndices[t]];
+            nface.mIndices[1] = idx[triIndices[t + 1]];
+            nface.mIndices[2] = idx[triIndices[t + 2]];
         }
 
+        // prevent double deletion of the indices field
+        face.mIndices = nullptr;
+
 #ifdef AI_BUILD_TRIANGULATE_DEBUG_POLYS
-
-        for(aiFace* f = last_face; f != curOut; ++f) {
-            unsigned int* i = f->mIndices;
-            fprintf(fout," (%i %i %i)",i[0],i[1],i[2]);
+        fprintf(fout, "triangulation sequence:");
+        for (aiFace *f = last_face; f != curOut; ++f) {
+            unsigned int *i = f->mIndices;
+            fprintf(fout, " (%i %i %i)", i[0], i[1], i[2]);
         }
-
-        fprintf(fout,"\n*********************************************************************\n");
+        fprintf(fout, "\n*********************************************************************\n");
         fflush(fout);
-
 #endif
 
-        for(aiFace* f = last_face; f != curOut; ) {
-            unsigned int* i = f->mIndices;
-
-            i[0] = idx[i[0]];
-            i[1] = idx[i[1]];
-            i[2] = idx[i[2]];
-
-            // IMPROVEMENT: Polygons are not supported yet by this ngon encoding + triangulation step.
-            //              So we encode polygons as regular triangles. No way to reconstruct the original
-            //              polygon in this case.
+        // Encode the produced triangles with the ngon convention so that
+        // consecutive faces can be reconstructed as polygons.
+        for (aiFace *f = last_face; f != curOut; ++f) {
             ngonEncoder.ngonEncodeTriangle(f);
-            ++f;
         }
 
         delete[] face.mIndices;

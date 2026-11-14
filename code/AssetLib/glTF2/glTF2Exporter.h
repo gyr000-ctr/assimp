@@ -69,6 +69,7 @@ namespace glTF2 {
 class Asset;
 
 struct TexProperty;
+struct Mesh;
 struct TextureInfo;
 struct NormalTextureInfo;
 struct OcclusionTextureInfo;
@@ -143,6 +144,11 @@ private:
     std::shared_ptr<glTF2::Asset> mAsset;
     std::vector<unsigned char> mBodyData;
     ai_real configEpsilon;
+
+    // Maps each aiScene mesh index to the exported glTF mesh. Meshes that
+    // produce no exportable primitive (e.g. a mesh whose only faces were
+    // degenerate) stay null, and node hierarchy export skips them.
+    std::vector<glTFCommon::Ref<glTF2::Mesh>> mMeshIndexMap;
 };
 
 } // namespace Assimp

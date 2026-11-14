@@ -56,8 +56,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/schema.h>
 
 #include <array>
+#include <cmath>
 #include <fstream>
+#include <memory>
 #include <sstream>
+#include <string>
 
 #include <assimp/material.h>
 #include <assimp/GltfMaterial.h>
@@ -1277,3 +1280,396 @@ TEST_F(utglTF2ImportExport, importAnimationInterpolationIsPreserved) {
         }
     }
 }
+
+#ifndef ASSIMP_BUILD_NO_EXPORT
+// ------------------------------------------------------------------------------------------------
+// In-memory polygon export tests. The glTF 2.0 spec only knows points,
+// lines and triangles, so polygon faces must be triangulated by the
+// exporter itself (the caller is not required to run
+// aiProcess_Triangulate first).
+namespace {
+
+struct PolygonExportFixture {
+    // Build a scene containing a single mesh with the given vertices and
+    // faces, plus numMaterials materials. The returned scene is owned by
+    // the unique_ptr.
+    static std::unique_ptr<aiScene> BuildScene(
+            const std::vector<aiVector3D> &vertices,
+            const std::vector<std::vector<unsigned int>> &faces,
+            unsigned int numMaterials,
+            const std::vector<unsigned int> &faceMaterials,
+            unsigned int primitiveTypes) {
+        auto scene = std::make_unique<aiScene>();
+
+        scene->mNumMaterials = numMaterials;
+        scene->mMaterials = new aiMaterial *[numMaterials];
+        for (unsigned int m = 0; m < numMaterials; ++m) {
+            auto *mat = new aiMaterial();
+            const aiString name(std::string("Mat") + std::to_string(m));
+            mat->AddProperty(&name, AI_MATKEY_NAME);
+            scene->mMaterials[m] = mat;
+        }
+
+        auto *mesh = new aiMesh();
+        mesh->mMaterialIndex = 0;
+        mesh->mPrimitiveTypes = primitiveTypes;
+        mesh->mNumVertices = static_cast<unsigned int>(vertices.size());
+        mesh->mVertices = new aiVector3D[mesh->mNumVertices];
+        for (unsigned int i = 0; i < mesh->mNumVertices; ++i) {
+            mesh->mVertices[i] = vertices[i];
+        }
+
+        mesh->mNumFaces = static_cast<unsigned int>(faces.size());
+        mesh->mFaces = new aiFace[mesh->mNumFaces];
+        for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
+            mesh->mFaces[f].mNumIndices = static_cast<unsigned int>(faces[f].size());
+            mesh->mFaces[f].mIndices = new unsigned int[faces[f].size()];
+            for (unsigned int i = 0; i < faces[f].size(); ++i) {
+                mesh->mFaces[f].mIndices[i] = faces[f][i];
+            }
+        }
+        mesh->mMaterialIndex = faceMaterials.empty() ? 0u : faceMaterials[0];
+
+        scene->mNumMeshes = 1;
+        scene->mMeshes = new aiMesh *[1];
+        scene->mMeshes[0] = mesh;
+
+        auto *root = new aiNode();
+        root->mName = aiString("root");
+        root->mNumMeshes = 1;
+        root->mMeshes = new unsigned int[1];
+        root->mMeshes[0] = 0;
+        scene->mRootNode = root;
+
+        return scene;
+    }
+
+    // Export to an in-memory GLB and re-import it with Assimp itself.
+    static const aiScene *RoundTripGLB(Assimp::Exporter &exporter, Assimp::Importer &importer,
+            const aiScene *input, const aiExportDataBlob *&blobOut) {
+        blobOut = exporter.ExportToBlob(input, "glb2");
+        if (blobOut == nullptr || blobOut->data == nullptr || blobOut->size == 0) {
+            return nullptr;
+        }
+        return importer.ReadFileFromMemory(blobOut->data, blobOut->size, 0, "glb");
+    }
+
+    static void BoundingBox(const aiScene *scene, aiVector3D &bMin, aiVector3D &bMax) {
+        bMin = aiVector3D(1e30f, 1e30f, 1e30f);
+        bMax = aiVector3D(-1e30f, -1e30f, -1e30f);
+        for (unsigned int m = 0; m < scene->mNumMeshes; ++m) {
+            const aiMesh *mesh = scene->mMeshes[m];
+            for (unsigned int v = 0; v < mesh->mNumVertices; ++v) {
+                const aiVector3D &p = mesh->mVertices[v];
+                bMin.x = std::min(bMin.x, p.x);
+                bMin.y = std::min(bMin.y, p.y);
+                bMin.z = std::min(bMin.z, p.z);
+                bMax.x = std::max(bMax.x, p.x);
+                bMax.y = std::max(bMax.y, p.y);
+                bMax.z = std::max(bMax.z, p.z);
+            }
+        }
+    }
+
+    // Signed area of a triangle in the xy plane; sign encodes winding.
+    static double SignedAreaXY(const aiVector3D &a, const aiVector3D &b, const aiVector3D &c) {
+        return 0.5 * ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+    }
+};
+
+// A convex pentagon (ccw) and a concave L-shaped hexagon (cw) must both
+// round-trip as valid triangles covering every input vertex.
+TEST_F(utglTF2ImportExport, export_polygons_are_triangulated_roundtrip) {
+    // Convex ccw pentagon in the xy plane.
+    const std::vector<aiVector3D> convexVerts = {
+            {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.2f, 1.0f, 0.0f},
+            {0.5f, 1.6f, 0.0f}, {-0.2f, 1.0f, 0.0f}};
+    const std::vector<std::vector<unsigned int>> convexFaces = {{0, 1, 2, 3, 4}};
+
+    // Concave L-shape, given clockwise (the reverse ring of the ccw
+    // boundary (0,0)->(2,0)->(2,1)->(1,1)->(1,2)->(0,2)).
+    const std::vector<aiVector3D> concaveVerts = {
+            {0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 0.0f},
+            {1.0f, 1.0f, 0.0f}, {1.0f, 2.0f, 0.0f}, {0.0f, 2.0f, 0.0f}};
+    const std::vector<std::vector<unsigned int>> concaveFaces = {{5, 4, 3, 2, 1, 0}};
+
+    for (int variant = 0; variant < 2; ++variant) {
+        const bool concave = variant == 1;
+        const auto &verts = concave ? concaveVerts : convexVerts;
+        const auto &faces = concave ? concaveFaces : convexFaces;
+        const std::vector<unsigned int> matAssign = {0};
+
+        std::unique_ptr<aiScene> scene = PolygonExportFixture::BuildScene(
+                verts, faces, 1, matAssign, aiPrimitiveType_POLYGON);
+
+        Assimp::Exporter exporter;
+        Assimp::Importer importer;
+        const aiExportDataBlob *blob = nullptr;
+        const aiScene *reimported = PolygonExportFixture::RoundTripGLB(exporter, importer, scene.get(), blob);
+        ASSERT_NE(nullptr, reimported) << exporter.GetErrorString();
+        ASSERT_EQ(1u, reimported->mNumMeshes);
+
+        const aiMesh *mesh = reimported->mMeshes[0];
+        const unsigned int expectedTriangles = static_cast<unsigned int>(faces[0].size()) - 2;
+        ASSERT_EQ(expectedTriangles, mesh->mNumFaces);
+
+        std::vector<bool> usedVerts(verts.size(), false);
+        for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
+            const aiFace &face = mesh->mFaces[f];
+            ASSERT_EQ(3u, face.mNumIndices);
+            for (unsigned int k = 0; k < 3; ++k) {
+                ASSERT_LT(face.mIndices[k], mesh->mNumVertices);
+                usedVerts[face.mIndices[k]] = true;
+            }
+            // No zero-area triangle may be emitted.
+            const double area = PolygonExportFixture::SignedAreaXY(
+                    mesh->mVertices[face.mIndices[0]], mesh->mVertices[face.mIndices[1]],
+                    mesh->mVertices[face.mIndices[2]]);
+            EXPECT_GT(std::abs(area), 1e-10);
+
+            // Winding must match the input ring: ccw input -> positive
+            // area, cw input -> negative area.
+            if (concave) {
+                EXPECT_LT(area, 0.0);
+            } else {
+                EXPECT_GT(area, 0.0);
+            }
+        }
+        for (bool used : usedVerts) {
+            EXPECT_TRUE(used);
+        }
+
+        // Bounding box is preserved.
+        aiVector3D inMin, inMax, outMin, outMax;
+        PolygonExportFixture::BoundingBox(scene.get(), inMin, inMax);
+        PolygonExportFixture::BoundingBox(reimported, outMin, outMax);
+        EXPECT_NEAR(inMin.x, outMin.x, 1e-6);
+        EXPECT_NEAR(inMin.y, outMin.y, 1e-6);
+        EXPECT_NEAR(inMax.x, outMax.x, 1e-6);
+        EXPECT_NEAR(inMax.y, outMax.y, 1e-6);
+    }
+}
+
+// A polygon whose first vertex is repeated at the end (closed loop) and
+// one with a collinear extra vertex must triangulate without producing
+// zero-area triangles.
+TEST_F(utglTF2ImportExport, export_polygon_repeated_and_collinear_points) {
+    const std::vector<aiVector3D> verts = {
+            {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, // collinear edge point
+            {2.0f, 2.0f, 0.0f}, {0.0f, 2.0f, 0.0f}, {0.0f, 0.0f, 0.0f}}; // repeated first vertex
+    const std::vector<std::vector<unsigned int>> faces = {{0, 1, 2, 3, 4, 5}};
+
+    std::unique_ptr<aiScene> scene =
+            PolygonExportFixture::BuildScene(verts, faces, 1, {0}, aiPrimitiveType_POLYGON);
+
+    Assimp::Exporter exporter;
+    Assimp::Importer importer;
+    const aiExportDataBlob *blob = nullptr;
+    const aiScene *reimported = PolygonExportFixture::RoundTripGLB(exporter, importer, scene.get(), blob);
+    ASSERT_NE(nullptr, reimported) << exporter.GetErrorString();
+
+    const aiMesh *mesh = reimported->mMeshes[0];
+    // Four unique corners form a quad: at least two triangles, and every
+    // emitted triangle must have positive area (earcut may emit a third
+    // sliver-free triangle involving the collinear point).
+    EXPECT_GE(mesh->mNumFaces, 2u);
+    double totalArea = 0.0;
+    for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
+        const aiFace &face = mesh->mFaces[f];
+        ASSERT_EQ(3u, face.mNumIndices);
+        const double area = PolygonExportFixture::SignedAreaXY(
+                mesh->mVertices[face.mIndices[0]], mesh->mVertices[face.mIndices[1]],
+                mesh->mVertices[face.mIndices[2]]);
+        EXPECT_GT(std::abs(area), 1e-10);
+        totalArea += std::abs(area);
+    }
+    // The quad covers an area of 2 x 2 = 4.
+    EXPECT_NEAR(4.0, totalArea, 1e-6);
+}
+
+// Fully degenerate faces (all points collinear) are skipped with a
+// warning rather than exported as zero-area triangles.
+TEST_F(utglTF2ImportExport, export_degenerate_polygon_is_skipped) {
+    const std::vector<aiVector3D> verts = {
+            {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}};
+    const std::vector<std::vector<unsigned int>> faces = {{0, 1, 2, 3}};
+
+    std::unique_ptr<aiScene> scene =
+            PolygonExportFixture::BuildScene(verts, faces, 1, {0}, aiPrimitiveType_POLYGON);
+
+    Assimp::Exporter exporter;
+    const aiExportDataBlob *blob = exporter.ExportToBlob(scene.get(), "glb2");
+    ASSERT_NE(nullptr, blob);
+
+    Assimp::Importer importer;
+    const aiScene *reimported = importer.ReadFileFromMemory(blob->data, blob->size, 0, "glb");
+    ASSERT_NE(nullptr, reimported);
+    // The only face was degenerate: no triangle geometry survives. The
+    // exporter either drops the empty mesh entirely or keeps a mesh
+    // without faces; both are valid.
+    for (unsigned int m = 0; m < reimported->mNumMeshes; ++m) {
+        EXPECT_EQ(0u, reimported->mMeshes[m]->mNumFaces);
+    }
+}
+
+// Two meshes with different materials must round-trip with the material
+// indices preserved, every polygon triangulated and no zero-area
+// triangle emitted.
+TEST_F(utglTF2ImportExport, export_polygon_multi_material_groups_roundtrip) {
+    const std::vector<aiVector3D> verts = {
+            // Quad
+            {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+            // Convex pentagon
+            {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, {3.5f, 0.5f, 0.0f}, {3.0f, 1.0f, 0.0f},
+            {2.0f, 1.0f, 0.0f}};
+    // Mesh 0: a quad (2 triangles) and a convex pentagon (3 triangles).
+    const std::vector<std::vector<unsigned int>> faces = {{0, 1, 2, 3}, {4, 5, 6, 7, 8}};
+
+    auto scene = std::make_unique<aiScene>();
+    scene->mNumMaterials = 2;
+    scene->mMaterials = new aiMaterial *[2];
+    for (unsigned int m = 0; m < 2; ++m) {
+        auto *mat = new aiMaterial();
+        const aiString name(std::string("Mat") + std::to_string(m));
+        mat->AddProperty(&name, AI_MATKEY_NAME);
+        scene->mMaterials[m] = mat;
+    }
+
+    auto *mesh = new aiMesh();
+    mesh->mPrimitiveTypes = aiPrimitiveType_POLYGON;
+    mesh->mNumVertices = static_cast<unsigned int>(verts.size());
+    mesh->mVertices = new aiVector3D[mesh->mNumVertices];
+    for (unsigned int i = 0; i < mesh->mNumVertices; ++i) {
+        mesh->mVertices[i] = verts[i];
+    }
+    mesh->mNumFaces = static_cast<unsigned int>(faces.size());
+    mesh->mFaces = new aiFace[mesh->mNumFaces];
+    for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
+        mesh->mFaces[f].mNumIndices = static_cast<unsigned int>(faces[f].size());
+        mesh->mFaces[f].mIndices = new unsigned int[faces[f].size()];
+        for (unsigned int i = 0; i < faces[f].size(); ++i) {
+            mesh->mFaces[f].mIndices[i] = faces[f][i];
+        }
+    }
+    mesh->mMaterialIndex = 0;
+
+    // Second aiMesh with material 1, sharing the vertex pool is not legal
+    // across meshes, so give it its own copy of the second quad.
+    auto *mesh2 = new aiMesh();
+    mesh2->mPrimitiveTypes = aiPrimitiveType_POLYGON;
+    mesh2->mMaterialIndex = 1;
+    mesh2->mNumVertices = 4;
+    mesh2->mVertices = new aiVector3D[4];
+    for (unsigned int i = 0; i < 4; ++i) {
+        mesh2->mVertices[i] = verts[4 + i];
+    }
+    mesh2->mNumFaces = 1;
+    mesh2->mFaces = new aiFace[1];
+    mesh2->mFaces[0].mNumIndices = 4;
+    mesh2->mFaces[0].mIndices = new unsigned int[4]{0, 1, 2, 3};
+
+    scene->mNumMeshes = 2;
+    scene->mMeshes = new aiMesh *[2]{mesh, mesh2};
+    auto *root = new aiNode();
+    root->mName = aiString("root");
+    root->mNumMeshes = 2;
+    root->mMeshes = new unsigned int[2]{0, 1};
+    scene->mRootNode = root;
+
+    Assimp::Exporter exporter;
+    Assimp::Importer importer;
+    const aiExportDataBlob *blob = nullptr;
+    const aiScene *reimported = PolygonExportFixture::RoundTripGLB(exporter, importer, scene.get(), blob);
+    ASSERT_NE(nullptr, reimported) << exporter.GetErrorString();
+
+    // The glTF 2. importer always appends a default material after the
+    // imported ones, so expect both source materials plus that one.
+    ASSERT_GE(reimported->mNumMaterials, 2u);
+    {
+        aiString name0, name1;
+        reimported->mMaterials[0]->Get(AI_MATKEY_NAME, name0);
+        reimported->mMaterials[1]->Get(AI_MATKEY_NAME, name1);
+        EXPECT_STREQ("Mat0", name0.C_Str());
+        EXPECT_STREQ("Mat1", name1.C_Str());
+    }
+    ASSERT_EQ(2u, reimported->mNumMeshes);
+
+    // Mesh 0: one quad (2) + one pentagon (3) = 5 triangles.
+    EXPECT_EQ(5u, reimported->mMeshes[0]->mNumFaces);
+    // Mesh 1: one quad = 2 triangles, material index 1 preserved.
+    EXPECT_EQ(2u, reimported->mMeshes[1]->mNumFaces);
+    EXPECT_EQ(1u, reimported->mMeshes[1]->mMaterialIndex);
+    EXPECT_EQ(0u, reimported->mMeshes[0]->mMaterialIndex);
+
+    for (unsigned int m = 0; m < reimported->mNumMeshes; ++m) {
+        const aiMesh *out = reimported->mMeshes[m];
+        for (unsigned int f = 0; f < out->mNumFaces; ++f) {
+            ASSERT_EQ(3u, out->mFaces[f].mNumIndices);
+            const aiVector3D &a = out->mVertices[out->mFaces[f].mIndices[0]];
+            const aiVector3D &b = out->mVertices[out->mFaces[f].mIndices[1]];
+            const aiVector3D &c = out->mVertices[out->mFaces[f].mIndices[2]];
+            // True 3D triangle area: half the length of the cross product.
+            const double area = 0.5 * ((b - a) ^ (c - a)).Length();
+            EXPECT_GT(area, 1e-10);
+        }
+    }
+}
+
+// Already-triangle, line and point primitives must remain compatible:
+// a mixed mesh round-trips with one face of each kind. The exporter's
+// automatic SortByPType step may split them into separate meshes (one
+// per primitive type), but no geometry is lost.
+TEST_F(utglTF2ImportExport, export_triangle_line_point_primitives_preserved) {
+    const std::vector<aiVector3D> verts = {
+            {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+            {2.0f, 2.0f, 0.0f}, {3.0f, 2.0f, 0.0f}, {4.0f, 4.0f, 0.0f}};
+    const std::vector<std::vector<unsigned int>> faces = {
+            {0, 1, 2}, // triangle
+            {3, 4},    // line
+            {5}};      // point
+
+    std::unique_ptr<aiScene> scene = PolygonExportFixture::BuildScene(
+            verts, faces, 1, {0},
+            aiPrimitiveType_TRIANGLE | aiPrimitiveType_LINE | aiPrimitiveType_POINT);
+
+    Assimp::Exporter exporter;
+    Assimp::Importer importer;
+    const aiExportDataBlob *blob = nullptr;
+    const aiScene *reimported = PolygonExportFixture::RoundTripGLB(exporter, importer, scene.get(), blob);
+    ASSERT_NE(nullptr, reimported) << exporter.GetErrorString();
+    // SortByPType splits the mixed mesh into up to three single-type meshes.
+    EXPECT_GE(reimported->mNumMeshes, 1u);
+
+    unsigned int numTris = 0, numLines = 0, numPoints = 0;
+    for (unsigned int m = 0; m < reimported->mNumMeshes; ++m) {
+        const aiMesh *mesh = reimported->mMeshes[m];
+        for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
+            switch (mesh->mFaces[f].mNumIndices) {
+            case 3:
+                ++numTris;
+                break;
+            case 2:
+                ++numLines;
+                break;
+            case 1:
+                ++numPoints;
+                break;
+            default:
+                FAIL() << "unexpected face size";
+            }
+        }
+    }
+    EXPECT_EQ(1u, numTris);
+    EXPECT_EQ(1u, numLines);
+    EXPECT_EQ(1u, numPoints);
+
+    aiVector3D inMin, inMax, outMin, outMax;
+    PolygonExportFixture::BoundingBox(scene.get(), inMin, inMax);
+    PolygonExportFixture::BoundingBox(reimported, outMin, outMax);
+    EXPECT_NEAR(inMin.x, outMin.x, 1e-6);
+    EXPECT_NEAR(inMax.x, outMax.x, 1e-6);
+    EXPECT_NEAR(inMax.y, outMax.y, 1e-6);
+}
+
+} // namespace
+#endif // ASSIMP_BUILD_NO_EXPORT
