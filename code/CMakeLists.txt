@@ -168,6 +168,8 @@ SOURCE_GROUP(Logging FILES ${Logging_SRCS})
 
 SET( Common_SRCS
   Common/StbCommon.h
+  Common/AnimationRetarget.cpp
+  Common/AnimationRetarget.h
   Common/Compression.cpp
   Common/Compression.h
   Common/BaseImporter.cpp

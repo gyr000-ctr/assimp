@@ -73,6 +73,7 @@ SET( COMMON
   unit/utIOStreamBuffer.cpp
   unit/utIssues.cpp
   unit/utAnim.cpp
+  unit/utAnimationRetarget.cpp
   unit/AssimpAPITest.cpp
   unit/AssimpAPITest_aiMatrix3x3.cpp
   unit/AssimpAPITest_aiMatrix4x4.cpp
