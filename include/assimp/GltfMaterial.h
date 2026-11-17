@@ -57,6 +57,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define AI_MATKEY_GLTF_ALPHAMODE "$mat.gltf.alphaMode", 0, 0
 #define AI_MATKEY_GLTF_ALPHACUTOFF "$mat.gltf.alphaCutoff", 0, 0
 
+// Original JSON of the KHR_materials_iridescence extension object, kept verbatim on import
+#define AI_MATKEY_GLTF_IRIDESCENCE_RAW_JSON "$mat.gltf.iridescence.json", 0, 0
+
 #define _AI_MATKEY_GLTF_MAPPINGNAME_BASE "$tex.mappingname"
 #define _AI_MATKEY_GLTF_MAPPINGID_BASE "$tex.mappingid"
 #define _AI_MATKEY_GLTF_MAPPINGFILTER_MAG_BASE "$tex.mappingfiltermag"

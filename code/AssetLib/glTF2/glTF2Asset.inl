@@ -1484,6 +1484,53 @@ inline void Material::Read(Value &material, Asset &r) {
             }
         }
 
+        if (r.extensionsUsed.KHR_materials_iridescence) {
+            if (Value *curMaterialIridescence = FindObject(*extensions, "KHR_materials_iridescence")) {
+                MaterialIridescence iridescence;
+
+                // Keep the original JSON of the extension object verbatim
+                {
+                    rapidjson::StringBuffer sb;
+                    rapidjson::Writer<rapidjson::StringBuffer> writer(sb);
+                    curMaterialIridescence->Accept(writer);
+                    iridescence.rawJson = sb.GetString();
+                }
+
+                // All members are optional per the spec; track absent ones so the
+                // importer can report that defaults were applied
+                if (!ReadMember(*curMaterialIridescence, "iridescenceFactor", iridescence.iridescenceFactor)) {
+                    iridescence.missingMembers = true;
+                }
+                if (!ReadMember(*curMaterialIridescence, "iridescenceIor", iridescence.iridescenceIor)) {
+                    iridescence.missingMembers = true;
+                }
+                if (!ReadMember(*curMaterialIridescence, "iridescenceThicknessMinimum", iridescence.iridescenceThicknessMinimum)) {
+                    iridescence.missingMembers = true;
+                }
+                if (!ReadMember(*curMaterialIridescence, "iridescenceThicknessMaximum", iridescence.iridescenceThicknessMaximum)) {
+                    iridescence.missingMembers = true;
+                }
+
+                // Read textures with an explicit bounds check so an out-of-bounds
+                // texture index is reported instead of aborting the whole import
+                const char *textureProps[] = { "iridescenceTexture", "iridescenceThicknessTexture" };
+                TextureInfo *textureOuts[] = { &iridescence.iridescenceTexture, &iridescence.iridescenceThicknessTexture };
+                for (int i = 0; i < 2; ++i) {
+                    if (Value *prop = FindMember(*curMaterialIridescence, textureProps[i])) {
+                        if (Value *indexProp = FindUInt(*prop, "index")) {
+                            if (indexProp->GetUint() >= r.textures.DictSize()) {
+                                iridescence.textureIndexOutOfBounds = true;
+                                continue;
+                            }
+                        }
+                        SetTextureProperties(r, prop, *textureOuts[i]);
+                    }
+                }
+
+                this->materialIridescence = Nullable<MaterialIridescence>(iridescence);
+            }
+        }
+
         unlit = nullptr != FindObject(*extensions, "KHR_materials_unlit");
     }
 }
@@ -2274,6 +2321,7 @@ inline void Asset::ReadExtensionsUsed(Document &doc) {
     CHECK_EXT(KHR_materials_ior);
     CHECK_EXT(KHR_materials_emissive_strength);
     CHECK_EXT(KHR_materials_anisotropy);
+    CHECK_EXT(KHR_materials_iridescence);
     CHECK_EXT(KHR_draco_mesh_compression);
     CHECK_EXT(KHR_texture_basisu);
     CHECK_EXT(EXT_texture_webp);

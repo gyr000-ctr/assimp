@@ -351,12 +351,18 @@ enum aiTextureType {
      */
     aiTextureType_GLTF_METALLIC_ROUGHNESS = 27,
 
+    /** Iridescence (thin-film interference)
+     * Used by KHR_materials_iridescence: index 0 is the iridescence
+     * (strength) texture, index 1 is the iridescence thickness texture.
+     */
+    aiTextureType_IRIDESCENCE = 28,
+
 #ifndef SWIG
     _aiTextureType_Force32Bit = INT_MAX
 #endif
 };
 
-#define AI_TEXTURE_TYPE_MAX aiTextureType_GLTF_METALLIC_ROUGHNESS
+#define AI_TEXTURE_TYPE_MAX aiTextureType_IRIDESCENCE
 
 // -------------------------------------------------------------------------------
 /**
@@ -1094,6 +1100,22 @@ extern "C" {
 // ----------
 #define AI_MATKEY_ANISOTROPY_ROTATION "$mat.anisotropyRotation", 0, 0
 #define AI_MATKEY_ANISOTROPY_TEXTURE aiTextureType_ANISOTROPY, 0
+
+// Iridescence
+// -----------
+// https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_iridescence
+// Strength of the iridescence (thin-film interference) effect. 0.0 = disabled (default), 1.0 = full effect
+#define AI_MATKEY_IRIDESCENCE_FACTOR "$mat.iridescence.factor", 0, 0
+// Index of refraction of the thin-film layer. Default 1.3
+#define AI_MATKEY_IRIDESCENCE_IOR "$mat.iridescence.ior", 0, 0
+// Minimum thickness of the thin-film layer, in nanometers. Default 100.0
+#define AI_MATKEY_IRIDESCENCE_THICKNESS_MIN "$mat.iridescence.thicknessMinimum", 0, 0
+// Maximum thickness of the thin-film layer, in nanometers. Default 400.0
+#define AI_MATKEY_IRIDESCENCE_THICKNESS_MAX "$mat.iridescence.thicknessMaximum", 0, 0
+// Texture scaling the iridescence strength. Multiplied by AI_MATKEY_IRIDESCENCE_FACTOR
+#define AI_MATKEY_IRIDESCENCE_TEXTURE aiTextureType_IRIDESCENCE, 0
+// Texture defining the thin-film thickness (in the [min, max] range), stored in the green channel
+#define AI_MATKEY_IRIDESCENCE_THICKNESS_TEXTURE aiTextureType_IRIDESCENCE, 1
 
 // ---------------------------------------------------------------------------
 // Pure key names for all texture-related properties

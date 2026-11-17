@@ -80,6 +80,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rapidjson/error/en.h>
 #include <rapidjson/rapidjson.h>
 #include <rapidjson/schema.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 
 #if (__GNUC__ == 8 && __GNUC_MINOR__ >= 0)
 #   pragma GCC diagnostic pop
@@ -822,6 +824,22 @@ struct MaterialAnisotropy {
     void SetDefaults();
 };
 
+//! KHR_materials_iridescence extension data
+struct MaterialIridescence {
+    float iridescenceFactor = 0.f;          //!< Strength of the effect, 0 disables it (spec default)
+    TextureInfo iridescenceTexture;         //!< Scales iridescenceFactor
+    float iridescenceIor = 1.3f;            //!< IOR of the thin-film layer (spec default 1.3)
+    float iridescenceThicknessMinimum = 100.f; //!< Minimum thin-film thickness in nm (spec default 100)
+    float iridescenceThicknessMaximum = 400.f; //!< Maximum thin-film thickness in nm (spec default 400)
+    TextureInfo iridescenceThicknessTexture;   //!< Thin-film thickness texture (green channel)
+
+    std::string rawJson; //!< Original JSON of the extension object, kept verbatim
+
+    //! Distinguishable import status flags
+    bool missingMembers = false;          //!< One or more members were absent, spec defaults were applied
+    bool textureIndexOutOfBounds = false; //!< A referenced texture index was invalid, the texture was skipped
+};
+
 //! The material appearance of a primitive.
 struct Material : public Object {
     //PBR metallic roughness properties
@@ -862,6 +880,9 @@ struct Material : public Object {
 
     //extension: KHR_materials_anisotropy
     Nullable<MaterialAnisotropy> materialAnisotropy;
+
+    //extension: KHR_materials_iridescence
+    Nullable<MaterialIridescence> materialIridescence;
 
     //extension: KHR_materials_unlit
     bool unlit;
@@ -1086,6 +1107,9 @@ public:
 
     inline unsigned int Size() const { return unsigned(mObjs.size()); }
 
+    //! Number of entries in the JSON dictionary array (0 if the section is missing)
+    inline unsigned int DictSize() const { return (mDict && mDict->IsArray()) ? unsigned(mDict->Size()) : 0u; }
+
     inline T &operator[](size_t i) { return *mObjs[i]; }
 };
 
@@ -1135,6 +1159,7 @@ public:
         bool KHR_materials_ior{false};
         bool KHR_materials_emissive_strength{false};
         bool KHR_materials_anisotropy{false};
+        bool KHR_materials_iridescence{false};
         bool KHR_draco_mesh_compression{false};
         bool FB_ngon_encoding{false};
         bool KHR_texture_basisu{false};

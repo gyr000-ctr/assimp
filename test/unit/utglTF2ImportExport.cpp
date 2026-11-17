@@ -204,6 +204,174 @@ TEST_F(utglTF2ImportExport, importglTF2_KHR_materials_clearcoat) {
     VerifyClearCoatScene(scene);
 }
 
+TEST_F(utglTF2ImportExport, importglTF2_KHR_materials_iridescence) {
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/glTF2/Iridescence-glTF/IridescenceTest.gltf", aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_TRUE(scene->HasMaterials());
+
+    const aiMaterial *material = nullptr;
+    const aiMaterial *plain = nullptr;
+    for (size_t i = 0; i < scene->mNumMaterials; ++i) {
+        if (scene->mMaterials[i]->GetName() == aiString("Iridescent")) {
+            material = scene->mMaterials[i];
+        }
+        if (scene->mMaterials[i]->GetName() == aiString("PlainPBR")) {
+            plain = scene->mMaterials[i];
+        }
+    }
+    ASSERT_NE(nullptr, material);
+    ASSERT_NE(nullptr, plain);
+
+    // factor, ior and thickness range must be mapped to material properties
+    ai_real value(0.0f);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_FACTOR, value));
+    EXPECT_EQ(ai_real(1.0), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_IOR, value));
+    EXPECT_EQ(ai_real(1.8), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_THICKNESS_MIN, value));
+    EXPECT_EQ(ai_real(140.0), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_THICKNESS_MAX, value));
+    EXPECT_EQ(ai_real(240.0), value);
+
+    // both textures must be mapped
+    aiString path;
+    EXPECT_EQ(aiReturn_SUCCESS, material->GetTexture(AI_MATKEY_IRIDESCENCE_TEXTURE, &path));
+    EXPECT_EQ(aiReturn_SUCCESS, material->GetTexture(AI_MATKEY_IRIDESCENCE_THICKNESS_TEXTURE, &path));
+
+    // the original JSON of the extension must be preserved
+    aiString rawJson;
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_GLTF_IRIDESCENCE_RAW_JSON, rawJson));
+    const std::string raw(rawJson.C_Str());
+    EXPECT_NE(std::string::npos, raw.find("iridescenceFactor"));
+    EXPECT_NE(std::string::npos, raw.find("iridescenceIor"));
+    EXPECT_NE(std::string::npos, raw.find("iridescenceThicknessMaximum"));
+
+    // a plain PBR material in the same file must be imported unchanged:
+    // no iridescence properties at all ...
+    EXPECT_EQ(aiReturn_FAILURE, plain->Get(AI_MATKEY_IRIDESCENCE_FACTOR, value));
+    EXPECT_EQ(aiReturn_FAILURE, plain->Get(AI_MATKEY_IRIDESCENCE_IOR, value));
+    EXPECT_EQ(aiReturn_FAILURE, plain->Get(AI_MATKEY_IRIDESCENCE_THICKNESS_MIN, value));
+    EXPECT_EQ(aiReturn_FAILURE, plain->Get(AI_MATKEY_IRIDESCENCE_THICKNESS_MAX, value));
+    EXPECT_EQ(aiReturn_FAILURE, plain->Get(AI_MATKEY_GLTF_IRIDESCENCE_RAW_JSON, rawJson));
+    EXPECT_EQ(aiReturn_FAILURE, plain->GetTexture(AI_MATKEY_IRIDESCENCE_TEXTURE, &path));
+    EXPECT_EQ(aiReturn_FAILURE, plain->GetTexture(AI_MATKEY_IRIDESCENCE_THICKNESS_TEXTURE, &path));
+
+    // ... while its ordinary PBR properties are still there
+    aiShadingMode shadingMode;
+    EXPECT_EQ(aiReturn_SUCCESS, plain->Get(AI_MATKEY_SHADING_MODEL, shadingMode));
+    EXPECT_EQ(aiShadingMode_PBR_BRDF, shadingMode);
+    EXPECT_EQ(aiReturn_SUCCESS, plain->Get(AI_MATKEY_METALLIC_FACTOR, value));
+    EXPECT_EQ(ai_real(0.0), value);
+    EXPECT_EQ(aiReturn_SUCCESS, plain->Get(AI_MATKEY_ROUGHNESS_FACTOR, value));
+    EXPECT_EQ(ai_real(1.0), value);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_KHR_materials_iridescence_missingMembers) {
+    Assimp::Importer importer;
+
+    struct LogObserver : Assimp::LogStream {
+        bool m_observedWarning = false;
+        void write(const char *message) override {
+            m_observedWarning = m_observedWarning ||
+                    (std::strstr(message, "KHR_materials_iridescence") != nullptr &&
+                            std::strstr(message, "missing") != nullptr);
+        }
+    };
+    LogObserver logObserver;
+
+    DefaultLogger::get()->attachStream(&logObserver);
+    const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/glTF2/Iridescence-glTF/IridescenceMissingMembers.gltf", aiProcess_ValidateDataStructure);
+    DefaultLogger::get()->detachStream(&logObserver);
+
+    ASSERT_NE(nullptr, scene);
+    ASSERT_TRUE(scene->HasMaterials());
+    const aiMaterial *material = scene->mMaterials[0];
+
+    // missing members must fall back to the spec defaults
+    ai_real value(-1.0f);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_FACTOR, value));
+    EXPECT_EQ(ai_real(0.0), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_IOR, value));
+    EXPECT_EQ(ai_real(1.3), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_THICKNESS_MIN, value));
+    EXPECT_EQ(ai_real(100.0), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_THICKNESS_MAX, value));
+    EXPECT_EQ(ai_real(400.0), value);
+
+    // ... and the missing members must be reported
+    EXPECT_TRUE(logObserver.m_observedWarning);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_KHR_materials_iridescence_textureOutOfBounds) {
+    Assimp::Importer importer;
+
+    struct LogObserver : Assimp::LogStream {
+        bool m_observedWarning = false;
+        void write(const char *message) override {
+            m_observedWarning = m_observedWarning ||
+                    (std::strstr(message, "KHR_materials_iridescence") != nullptr &&
+                            std::strstr(message, "out of bounds") != nullptr);
+        }
+    };
+    LogObserver logObserver;
+
+    DefaultLogger::get()->attachStream(&logObserver);
+    const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/glTF2/Iridescence-glTF/IridescenceTextureOutOfBounds.gltf", aiProcess_ValidateDataStructure);
+    DefaultLogger::get()->detachStream(&logObserver);
+
+    // an out-of-bounds texture index must not abort the import
+    ASSERT_NE(nullptr, scene);
+    ASSERT_TRUE(scene->HasMaterials());
+    const aiMaterial *material = scene->mMaterials[0];
+
+    // the scalar properties are still imported ...
+    ai_real value(0.0f);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_FACTOR, value));
+    EXPECT_EQ(ai_real(0.7), value);
+
+    // ... but the invalid texture reference is skipped ...
+    aiString path;
+    EXPECT_EQ(aiReturn_FAILURE, material->GetTexture(AI_MATKEY_IRIDESCENCE_TEXTURE, &path));
+
+    // ... and reported
+    EXPECT_TRUE(logObserver.m_observedWarning);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2_KHR_materials_iridescence_transmissionConflict) {
+    Assimp::Importer importer;
+
+    struct LogObserver : Assimp::LogStream {
+        bool m_observedWarning = false;
+        void write(const char *message) override {
+            m_observedWarning = m_observedWarning ||
+                    (std::strstr(message, "KHR_materials_iridescence") != nullptr &&
+                            std::strstr(message, "KHR_materials_transmission") != nullptr);
+        }
+    };
+    LogObserver logObserver;
+
+    DefaultLogger::get()->attachStream(&logObserver);
+    const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/glTF2/Iridescence-glTF/IridescenceTransmissionConflict.gltf", aiProcess_ValidateDataStructure);
+    DefaultLogger::get()->detachStream(&logObserver);
+
+    ASSERT_NE(nullptr, scene);
+    ASSERT_TRUE(scene->HasMaterials());
+    const aiMaterial *material = scene->mMaterials[0];
+
+    // both extensions must still be imported ...
+    ai_real value(0.0f);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_FACTOR, value));
+    EXPECT_EQ(ai_real(0.9), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_IRIDESCENCE_IOR, value));
+    EXPECT_EQ(ai_real(1.4), value);
+    EXPECT_EQ(aiReturn_SUCCESS, material->Get(AI_MATKEY_TRANSMISSION_FACTOR, value));
+    EXPECT_EQ(ai_real(0.5), value);
+
+    // ... and the combination must be reported
+    EXPECT_TRUE(logObserver.m_observedWarning);
+}
+
 #ifndef ASSIMP_BUILD_NO_EXPORT
 
 TEST_F(utglTF2ImportExport, exportExternalBasisUniversalTexture) {

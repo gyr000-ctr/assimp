@@ -1,0 +1,119 @@
+{
+    "asset": {
+        "version": "2.0",
+        "generator": "assimp KHR_materials_iridescence import test"
+    },
+    "extensionsUsed": [
+        "KHR_materials_iridescence"
+    ],
+    "scene": 0,
+    "scenes": [
+        {
+            "nodes": [0]
+        }
+    ],
+    "nodes": [
+        {
+            "mesh": 0
+        }
+    ],
+    "meshes": [
+        {
+            "primitives": [
+                {
+                    "attributes": {
+                        "POSITION": 0
+                    },
+                    "indices": 1,
+                    "material": 0
+                },
+                {
+                    "attributes": {
+                        "POSITION": 0
+                    },
+                    "indices": 1,
+                    "material": 1
+                }
+            ]
+        }
+    ],
+    "materials": [
+        {
+            "name": "Iridescent",
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [0.5, 0.5, 0.5, 1.0],
+                "metallicFactor": 0.0,
+                "roughnessFactor": 0.4
+            },
+            "extensions": {
+                "KHR_materials_iridescence": {
+                    "iridescenceFactor": 1.0,
+                    "iridescenceTexture": {
+                        "index": 0
+                    },
+                    "iridescenceIor": 1.8,
+                    "iridescenceThicknessMinimum": 140.0,
+                    "iridescenceThicknessMaximum": 240.0,
+                    "iridescenceThicknessTexture": {
+                        "index": 1
+                    }
+                }
+            }
+        },
+        {
+            "name": "PlainPBR",
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [1.0, 0.0, 0.0, 1.0],
+                "metallicFactor": 0.0,
+                "roughnessFactor": 1.0
+            }
+        }
+    ],
+    "textures": [
+        {
+            "source": 0
+        },
+        {
+            "source": 0
+        }
+    ],
+    "images": [
+        {
+            "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        }
+    ],
+    "accessors": [
+        {
+            "bufferView": 0,
+            "componentType": 5126,
+            "count": 3,
+            "type": "VEC3",
+            "min": [0.0, 0.0, 0.0],
+            "max": [1.0, 1.0, 0.0]
+        },
+        {
+            "bufferView": 1,
+            "componentType": 5123,
+            "count": 3,
+            "type": "SCALAR"
+        }
+    ],
+    "bufferViews": [
+        {
+            "buffer": 0,
+            "byteOffset": 0,
+            "byteLength": 36
+        },
+        {
+            "buffer": 0,
+            "byteOffset": 36,
+            "byteLength": 6
+        }
+    ],
+    "buffers": [
+        {
+            "byteLength": 42,
+            "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"
+        }
+    ]
+}

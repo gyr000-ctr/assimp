@@ -390,6 +390,35 @@ static aiMaterial *ImportMaterial(std::vector<int> &embeddedTexIdxs, Asset &r, M
             SetMaterialTextureProperty(embeddedTexIdxs, r, anisotropy.anisotropyTexture, aimat, AI_MATKEY_ANISOTROPY_TEXTURE);
         }
 
+        // KHR_materials_iridescence
+        if (mat.materialIridescence.isPresent) {
+            MaterialIridescence &iridescence = mat.materialIridescence.value;
+
+            // Report the distinguishable import results
+            if (iridescence.missingMembers) {
+                ASSIMP_LOG_WARN("glTF2: KHR_materials_iridescence: one or more members are missing, spec default values were applied");
+            }
+            if (iridescence.textureIndexOutOfBounds) {
+                ASSIMP_LOG_WARN("glTF2: KHR_materials_iridescence: texture index out of bounds, the texture reference was skipped");
+            }
+            if (mat.materialTransmission.isPresent) {
+                ASSIMP_LOG_WARN("glTF2: KHR_materials_iridescence is combined with KHR_materials_transmission on the same material; both were imported, but the combination may not be supported by all renderers");
+            }
+
+            aimat->AddProperty(&iridescence.iridescenceFactor, 1, AI_MATKEY_IRIDESCENCE_FACTOR);
+            aimat->AddProperty(&iridescence.iridescenceIor, 1, AI_MATKEY_IRIDESCENCE_IOR);
+            aimat->AddProperty(&iridescence.iridescenceThicknessMinimum, 1, AI_MATKEY_IRIDESCENCE_THICKNESS_MIN);
+            aimat->AddProperty(&iridescence.iridescenceThicknessMaximum, 1, AI_MATKEY_IRIDESCENCE_THICKNESS_MAX);
+            SetMaterialTextureProperty(embeddedTexIdxs, r, iridescence.iridescenceTexture, aimat, AI_MATKEY_IRIDESCENCE_TEXTURE);
+            SetMaterialTextureProperty(embeddedTexIdxs, r, iridescence.iridescenceThicknessTexture, aimat, AI_MATKEY_IRIDESCENCE_THICKNESS_TEXTURE);
+
+            // Keep the original JSON of the extension available on the material
+            if (!iridescence.rawJson.empty()) {
+                aiString rawJson(iridescence.rawJson);
+                aimat->AddProperty(&rawJson, AI_MATKEY_GLTF_IRIDESCENCE_RAW_JSON);
+            }
+        }
+
         return aimat;
     } catch (...) {
         delete aimat;
