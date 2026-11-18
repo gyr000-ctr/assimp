@@ -114,6 +114,7 @@ protected:
     void GetMatTex(const aiMaterial &mat, glTF2::TextureInfo &prop, aiTextureType tt, unsigned int slot);
     void GetMatTex(const aiMaterial &mat, glTF2::NormalTextureInfo &prop, aiTextureType tt, unsigned int slot);
     void GetMatTex(const aiMaterial &mat, glTF2::OcclusionTextureInfo &prop, aiTextureType tt, unsigned int slot);
+    void GetMatTexTransform(const aiMaterial &mat, glTF2::TextureInfo &prop, aiTextureType tt, unsigned int slot);
     aiReturn GetMatColor(const aiMaterial &mat, glTF2::vec4 &prop, const char *propName, int type, int idx) const;
     aiReturn GetMatColor(const aiMaterial &mat, glTF2::vec3 &prop, const char *propName, int type, int idx) const;
     bool GetMatSpecGloss(const aiMaterial &mat, glTF2::PbrSpecularGlossiness &pbrSG);
@@ -127,10 +128,12 @@ protected:
     bool GetMatAnisotropy(const aiMaterial &mat, glTF2::MaterialAnisotropy &anisotropy);
     void ExportMetadata();
     void ExportMaterials();
+    void ExportLights();
     void ExportMeshes();
     void MergeMeshes();
     unsigned int ExportNodeHierarchy(const aiNode *n);
     unsigned int ExportNode(const aiNode *node, glTFCommon::Ref<glTF2::Node> &parent);
+    void ExportNodeLight(const aiNode *n, glTFCommon::Ref<glTF2::Node> &node);
     void ExportScene();
     void ExportAnimations();
 

@@ -123,6 +123,8 @@ glTF2Exporter::glTF2Exporter(const char *filename, IOSystem *pIOSystem, const ai
 
     ExportMaterials();
 
+    ExportLights();
+
     if (mScene->mRootNode) {
         ExportNodeHierarchy(mScene->mRootNode);
     }
@@ -501,9 +503,14 @@ inline void ExportNodeExtras(const aiMetadata *metadata, Extras &extras) {
         return;
     }
 
-    extras.mValues.resize(metadata->mNumProperties);
     for (unsigned int i = 0; i < metadata->mNumProperties; ++i) {
-        ExportNodeExtras(metadata->mValues[i], metadata->mKeys[i], extras.mValues.at(i));
+        // The glTF2 importer synthesizes this key for KHR_lights_punctual's range.
+        // It is exported natively on the light, so it must not leak into extras.
+        if (strcmp(metadata->mKeys[i].C_Str(), "PBR_LightRange") == 0) {
+            continue;
+        }
+        extras.mValues.emplace_back();
+        ExportNodeExtras(metadata->mValues[i], metadata->mKeys[i], extras.mValues.back());
     }
 }
 
@@ -648,15 +655,54 @@ void glTF2Exporter::GetMatTex(const aiMaterial &mat, Ref<Texture> &texture, unsi
     }
 }
 
+void glTF2Exporter::GetMatTexTransform(const aiMaterial &mat, TextureInfo &prop, aiTextureType tt, unsigned int slot) {
+    if (!prop.texture) {
+        return;
+    }
+
+    aiUVTransform transform;
+    if (mat.Get(AI_MATKEY_UVTRANSFORM(tt, slot), transform) != AI_SUCCESS) {
+        return;
+    }
+
+    // Skip the identity transform: it is the glTF default and needs no extension.
+    if (transform.mTranslation.x == 0 && transform.mTranslation.y == 0 &&
+            transform.mScaling.x == 1 && transform.mScaling.y == 1 &&
+            transform.mRotation == 0) {
+        return;
+    }
+
+    // Inverse of the mapping applied by the importer (see glTF2Importer.cpp):
+    // assimp rotates around the image center and translates before scaling,
+    // glTF rotates around the texture origin and translates after scaling.
+    prop.textureTransformSupported = true;
+    prop.TextureTransformExt_t.scale[0] = static_cast<float>(transform.mScaling.x);
+    prop.TextureTransformExt_t.scale[1] = static_cast<float>(transform.mScaling.y);
+    prop.TextureTransformExt_t.rotation = static_cast<float>(-transform.mRotation); // must be negated
+
+    const ai_real rcos(std::cos(-transform.mRotation));
+    const ai_real rsin(std::sin(-transform.mRotation));
+    const ai_real sx = transform.mScaling.x != 0 ? transform.mScaling.x : ai_real(1.0);
+    const ai_real sy = transform.mScaling.y != 0 ? transform.mScaling.y : ai_real(1.0);
+    const ai_real tx = transform.mTranslation.x - ai_real(0.5);
+    const ai_real ty = transform.mTranslation.y + ai_real(0.5);
+    prop.TextureTransformExt_t.offset[0] = static_cast<float>((rcos * tx - rsin * ty) * sx + ai_real(0.5));
+    prop.TextureTransformExt_t.offset[1] = static_cast<float>((-rsin * tx - rcos * ty) * sy + ai_real(0.5));
+
+    mAsset->extensionsUsed.KHR_texture_transform = true;
+}
+
 void glTF2Exporter::GetMatTex(const aiMaterial &mat, TextureInfo &prop, aiTextureType tt, unsigned int slot = 0) {
     Ref<Texture> &texture = prop.texture;
     GetMatTex(mat, texture, prop.texCoord, tt, slot);
+    GetMatTexTransform(mat, prop, tt, slot);
 }
 
 void glTF2Exporter::GetMatTex(const aiMaterial &mat, NormalTextureInfo &prop, aiTextureType tt, unsigned int slot = 0) {
     Ref<Texture> &texture = prop.texture;
 
     GetMatTex(mat, texture, prop.texCoord, tt, slot);
+    GetMatTexTransform(mat, prop, tt, slot);
 
     if (texture) {
         // GetMatTexProp(mat, prop.texCoord, "texCoord", tt, slot);
@@ -668,6 +714,7 @@ void glTF2Exporter::GetMatTex(const aiMaterial &mat, OcclusionTextureInfo &prop,
     Ref<Texture> &texture = prop.texture;
 
     GetMatTex(mat, texture, prop.texCoord, tt, slot);
+    GetMatTexTransform(mat, prop, tt, slot);
 
     if (texture) {
         // GetMatTexProp(mat, prop.texCoord, "texCoord", tt, slot);
@@ -831,6 +878,62 @@ bool glTF2Exporter::GetMatAnisotropy(const aiMaterial &mat, glTF2::MaterialAniso
     GetMatTex(mat, anisotropy.anisotropyTexture, AI_MATKEY_ANISOTROPY_TEXTURE);
 
     return true;
+}
+
+void glTF2Exporter::ExportLights() {
+    if (mScene->mNumLights == 0) {
+        return;
+    }
+
+    for (unsigned int i = 0; i < mScene->mNumLights; ++i) {
+        const aiLight *ail = mScene->mLights[i];
+        ai_assert(ail != nullptr);
+
+        // Ids are unique across the whole asset and the node instantiating this
+        // light typically carries the same name. Give the light its own id so the
+        // node keeps its original name (the importer derives the light name from
+        // the node name, so the node must win).
+        std::string id = ail->mName.C_Str();
+        id += "_light";
+        Ref<Light> light = mAsset->lights.Create(mAsset->FindUniqueID(id, "light"));
+        light->name = ail->mName.C_Str();
+
+        switch (ail->mType) {
+        case aiLightSource_DIRECTIONAL:
+            light->type = Light::Directional;
+            break;
+        case aiLightSource_POINT:
+            light->type = Light::Point;
+            break;
+        case aiLightSource_SPOT:
+            light->type = Light::Spot;
+            light->innerConeAngle = static_cast<float>(ail->mAngleInnerCone);
+            light->outerConeAngle = static_cast<float>(ail->mAngleOuterCone);
+            break;
+        default:
+            // KHR_lights_punctual only knows directional, point and spot lights.
+            // Fail loudly instead of silently dropping the light.
+            throw DeadlyExportError("glTF2: Cannot export light \"" + std::string(ail->mName.C_Str()) +
+                    "\": light type " + ai_to_string(static_cast<unsigned int>(ail->mType)) +
+                    " is not expressible with KHR_lights_punctual (directional, point, spot)");
+        }
+
+        // assimp premultiplies color and intensity, KHR_lights_punctual carries them
+        // separately. Split them again using the largest color component as the
+        // intensity so that an import -> export -> import round trip is stable.
+        const aiColor3D &color = ail->mColorDiffuse;
+        const ai_real intensity = std::max(color.r, std::max(color.g, color.b));
+        light->intensity = static_cast<float>(intensity);
+        if (intensity > 0) {
+            light->color[0] = static_cast<float>(color.r / intensity);
+            light->color[1] = static_cast<float>(color.g / intensity);
+            light->color[2] = static_cast<float>(color.b / intensity);
+        } else {
+            light->color[0] = light->color[1] = light->color[2] = 1.0f;
+        }
+    }
+
+    mAsset->extensionsUsed.KHR_lights_punctual = true;
 }
 
 void glTF2Exporter::ExportMaterials() {
@@ -1535,6 +1638,31 @@ void glTF2Exporter::MergeMeshes() {
  * Export the root node of the node hierarchy.
  * Calls ExportNode for all children.
  */
+/*
+ * Links the node to a scene light of the same name, if any. The glTF2 importer
+ * names each aiLight after the node that instantiates it, so the name is the key.
+ */
+void glTF2Exporter::ExportNodeLight(const aiNode *n, Ref<Node> &node) {
+    for (unsigned int i = 0; i < mScene->mNumLights; ++i) {
+        if (n->mName != mScene->mLights[i]->mName) {
+            continue;
+        }
+
+        Ref<Light> light = mAsset->lights.Get(i);
+        node->light = light;
+
+        // The importer stores the optional light range in the node's metadata.
+        if (n->mMetaData != nullptr) {
+            float range;
+            if (n->mMetaData->Get("PBR_LightRange", range)) {
+                light->range.value = range;
+                light->range.isPresent = true;
+            }
+        }
+        break;
+    }
+}
+
 unsigned int glTF2Exporter::ExportNodeHierarchy(const aiNode *n) {
     Ref<Node> node = mAsset->nodes.Create(mAsset->FindUniqueID(n->mName.C_Str(), "node"));
 
@@ -1552,6 +1680,8 @@ unsigned int glTF2Exporter::ExportNodeHierarchy(const aiNode *n) {
     for (unsigned int i = 0; i < n->mNumMeshes; ++i) {
         node->meshes.emplace_back(mAsset->meshes.Get(n->mMeshes[i]));
     }
+
+    ExportNodeLight(n, node);
 
     for (unsigned int i = 0; i < n->mNumChildren; ++i) {
         unsigned int idx = ExportNode(n->mChildren[i], node);
@@ -1605,6 +1735,8 @@ unsigned int glTF2Exporter::ExportNode(const aiNode *n, Ref<Node> &parent) {
     for (unsigned int i = 0; i < n->mNumMeshes; ++i) {
         node->meshes.emplace_back(mAsset->meshes.Get(n->mMeshes[i]));
     }
+
+    ExportNodeLight(n, node);
 
     for (unsigned int i = 0; i < n->mNumChildren; ++i) {
         unsigned int idx = ExportNode(n->mChildren[i], node);

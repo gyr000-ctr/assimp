@@ -249,9 +249,38 @@ namespace glTF2 {
 
     }
 
-    inline void Write(Value& /*obj*/, Light& /*c*/, AssetWriter& /*w*/)
+    inline void Write(Value& obj, Light& l, AssetWriter& w)
     {
+        // Members are written in a fixed order (type, color, intensity, range, spot)
+        // to keep exported files stable for diffing.
+        const char *typeStr;
+        switch (l.type) {
+            case Light::Directional: typeStr = "directional"; break;
+            case Light::Point: typeStr = "point"; break;
+            default: typeStr = "spot"; break;
+        }
+        obj.AddMember("type", StringRef(typeStr), w.mAl);
 
+        if (l.color[0] != 1.0f || l.color[1] != 1.0f || l.color[2] != 1.0f) {
+            Value color;
+            obj.AddMember("color", MakeValue(color, l.color, w.mAl), w.mAl);
+        }
+
+        if (l.intensity != 1.0f) {
+            obj.AddMember("intensity", l.intensity, w.mAl);
+        }
+
+        if (l.range.isPresent) {
+            obj.AddMember("range", l.range.value, w.mAl);
+        }
+
+        if (l.type == Light::Spot) {
+            Value spot;
+            spot.SetObject();
+            spot.AddMember("innerConeAngle", l.innerConeAngle, w.mAl);
+            spot.AddMember("outerConeAngle", l.outerConeAngle, w.mAl);
+            obj.AddMember("spot", spot, w.mAl);
+        }
     }
 
     inline void Write(Value& obj, Image& img, AssetWriter& w)
@@ -287,6 +316,32 @@ namespace glTF2 {
 
             if (t.texCoord != 0) {
                 tex.AddMember("texCoord", t.texCoord, al);
+            }
+
+            if (t.textureTransformSupported) {
+                // Members are written in a fixed order (offset, rotation, scale)
+                // to keep exported files stable for diffing.
+                Value textureTransform;
+                textureTransform.SetObject();
+
+                if (t.TextureTransformExt_t.offset[0] != 0 || t.TextureTransformExt_t.offset[1] != 0) {
+                    Value offset;
+                    textureTransform.AddMember("offset", MakeValue(offset, t.TextureTransformExt_t.offset, al), al);
+                }
+
+                if (t.TextureTransformExt_t.rotation != 0) {
+                    textureTransform.AddMember("rotation", t.TextureTransformExt_t.rotation, al);
+                }
+
+                if (t.TextureTransformExt_t.scale[0] != 1 || t.TextureTransformExt_t.scale[1] != 1) {
+                    Value scale;
+                    textureTransform.AddMember("scale", MakeValue(scale, t.TextureTransformExt_t.scale, al), al);
+                }
+
+                Value exts;
+                exts.SetObject();
+                exts.AddMember("KHR_texture_transform", textureTransform, al);
+                tex.AddMember("extensions", exts, al);
             }
         }
 
@@ -753,6 +808,17 @@ namespace glTF2 {
             obj.AddMember("skin", n.skin->index, w.mAl);
         }
 
+        if (n.light) {
+            Value lightsExt;
+            lightsExt.SetObject();
+            lightsExt.AddMember("light", n.light->index, w.mAl);
+
+            Value exts;
+            exts.SetObject();
+            exts.AddMember("KHR_lights_punctual", lightsExt, w.mAl);
+            obj.AddMember("extensions", exts, w.mAl);
+        }
+
         //gltf2 spec does not support "skeletons" under node
         if(n.skeletons.size()) {
             AddRefsVector(obj, "skeletons", n.skeletons, w.mAl);
@@ -1029,6 +1095,14 @@ namespace glTF2 {
               exts.PushBack(StringRef("KHR_materials_unlit"), mAl);
             }
 
+            if (this->mAsset.extensionsUsed.KHR_lights_punctual) {
+                exts.PushBack(StringRef("KHR_lights_punctual"), mAl);
+            }
+
+            if (this->mAsset.extensionsUsed.KHR_texture_transform) {
+                exts.PushBack(StringRef("KHR_texture_transform"), mAl);
+            }
+
             if (this->mAsset.extensionsUsed.KHR_materials_specular) {
                 exts.PushBack(StringRef("KHR_materials_specular"), mAl);
             }
@@ -1092,17 +1166,17 @@ namespace glTF2 {
 
         if (d.mExtId) {
             Value* exts = FindObject(mDoc, "extensions");
-            if (nullptr != exts) {
+            if (nullptr == exts) {
                 mDoc.AddMember("extensions", Value().SetObject().Move(), mDoc.GetAllocator());
                 exts = FindObject(mDoc, "extensions");
             }
 
             container = FindObjectInContext(*exts, d.mExtId, "extensions");
-            if (nullptr != container) {
+            if (nullptr == container) {
                 exts->AddMember(StringRef(d.mExtId), Value().SetObject().Move(), mDoc.GetAllocator());
                 container = FindObjectInContext(*exts, d.mExtId, "extensions");
-                context = d.mExtId;
             }
+            context = d.mExtId;
         }
 
         Value *dict = FindArrayInContext(*container, d.mDictId, context);

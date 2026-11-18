@@ -321,6 +321,120 @@ TEST_F(utglTF2ImportExport, importglTF2AndExport_KHR_materials_pbrSpecularGlossi
     EXPECT_TRUE(importerMatTest(ASSIMP_TEST_MODELS_DIR "/glTF2/BoxTextured-glTF-pbrSpecularGlossiness/BoxTextured_out.glb", true, true));
 }
 
+TEST_F(utglTF2ImportExport, importglTF2AndExport_KHR_texture_transform) {
+    const char *srcFile = ASSIMP_TEST_MODELS_DIR "/glTF2/textureTransform/TextureTransformTest.gltf";
+    const char *outFile = ASSIMP_TEST_MODELS_DIR "/glTF2/textureTransform/TextureTransformTest_out.glb";
+    const char *outFileJson = ASSIMP_TEST_MODELS_DIR "/glTF2/textureTransform/TextureTransformTest_out.gltf";
+    {
+        Assimp::Importer importer;
+        Assimp::Exporter exporter;
+        const aiScene *scene = importer.ReadFile(srcFile, aiProcess_ValidateDataStructure);
+        ASSERT_NE(nullptr, scene);
+        ASSERT_EQ(aiReturn_SUCCESS, exporter.Export(scene, "glb2", outFile));
+        ASSERT_EQ(aiReturn_SUCCESS, exporter.Export(scene, "gltf2", outFileJson));
+    }
+
+    // The exported JSON must declare and use the extension.
+    {
+        std::ifstream input(outFileJson);
+        ASSERT_TRUE(input.good());
+        std::stringstream contents;
+        contents << input.rdbuf();
+        const std::string json = contents.str();
+        EXPECT_NE(json.find("\"KHR_texture_transform\""), std::string::npos);
+    }
+
+    // Re-import and compare the UV transforms of every material with the original.
+    Assimp::Importer origImporter, rtImporter;
+    const aiScene *orig = origImporter.ReadFile(srcFile, aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, orig);
+    const aiScene *roundTrip = rtImporter.ReadFile(outFile, aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, roundTrip);
+
+    ASSERT_EQ(orig->mNumMaterials, roundTrip->mNumMaterials);
+    unsigned int numTransformed = 0;
+    for (unsigned int i = 0; i < orig->mNumMaterials; ++i) {
+        aiUVTransform t0, t1;
+        const aiReturn r0 = orig->mMaterials[i]->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_BASE_COLOR, 0), t0);
+        const aiReturn r1 = roundTrip->mMaterials[i]->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_BASE_COLOR, 0), t1);
+        ASSERT_EQ(r0, r1) << "material " << i;
+        if (r0 != aiReturn_SUCCESS) {
+            continue;
+        }
+        ++numTransformed;
+        EXPECT_NEAR(t0.mTranslation.x, t1.mTranslation.x, 1e-4) << "material " << i;
+        EXPECT_NEAR(t0.mTranslation.y, t1.mTranslation.y, 1e-4) << "material " << i;
+        EXPECT_NEAR(t0.mScaling.x, t1.mScaling.x, 1e-4) << "material " << i;
+        EXPECT_NEAR(t0.mScaling.y, t1.mScaling.y, 1e-4) << "material " << i;
+        EXPECT_NEAR(t0.mRotation, t1.mRotation, 1e-4) << "material " << i;
+    }
+    EXPECT_EQ(6u, numTransformed);
+
+    ::remove(outFile);
+    ::remove(outFileJson);
+    ::remove(ASSIMP_TEST_MODELS_DIR "/glTF2/textureTransform/TextureTransformTest_out.bin");
+}
+
+TEST_F(utglTF2ImportExport, importglTF2AndExport_KHR_lights_punctual) {
+    const char *srcFile = ASSIMP_TEST_MODELS_DIR "/glTF2/KHR_lights_punctual/Lights.gltf";
+    const char *outFile = ASSIMP_TEST_MODELS_DIR "/glTF2/KHR_lights_punctual/Lights_out.glb";
+    {
+        Assimp::Importer importer;
+        Assimp::Exporter exporter;
+        const aiScene *scene = importer.ReadFile(srcFile, aiProcess_ValidateDataStructure);
+        ASSERT_NE(nullptr, scene) << importer.GetErrorString();
+        ASSERT_EQ(3u, scene->mNumLights);
+        ASSERT_EQ(aiReturn_SUCCESS, exporter.Export(scene, "glb2", outFile)) << exporter.GetErrorString();
+    }
+
+    // Re-import and compare every light with the original scene.
+    Assimp::Importer origImporter, rtImporter;
+    const aiScene *orig = origImporter.ReadFile(srcFile, aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, orig);
+    const aiScene *roundTrip = rtImporter.ReadFile(outFile, aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, roundTrip) << rtImporter.GetErrorString();
+
+    ASSERT_EQ(orig->mNumLights, roundTrip->mNumLights);
+    for (unsigned int i = 0; i < orig->mNumLights; ++i) {
+        const aiLight *l0 = orig->mLights[i];
+        const aiLight *l1 = roundTrip->mLights[i];
+        EXPECT_EQ(l0->mType, l1->mType) << "light " << i;
+        EXPECT_STREQ(l0->mName.C_Str(), l1->mName.C_Str()) << "light " << i;
+        EXPECT_NEAR(l0->mColorDiffuse.r, l1->mColorDiffuse.r, 1e-5) << "light " << i;
+        EXPECT_NEAR(l0->mColorDiffuse.g, l1->mColorDiffuse.g, 1e-5) << "light " << i;
+        EXPECT_NEAR(l0->mColorDiffuse.b, l1->mColorDiffuse.b, 1e-5) << "light " << i;
+        EXPECT_NEAR(l0->mAngleInnerCone, l1->mAngleInnerCone, 1e-5) << "light " << i;
+        EXPECT_NEAR(l0->mAngleOuterCone, l1->mAngleOuterCone, 1e-5) << "light " << i;
+    }
+
+    // The optional range must survive the round trip via the node metadata.
+    const aiNode *lamp = roundTrip->mRootNode->FindNode("Lamp");
+    ASSERT_NE(nullptr, lamp);
+    ASSERT_NE(nullptr, lamp->mMetaData);
+    float range = 0.0f;
+    ASSERT_TRUE(lamp->mMetaData->Get("PBR_LightRange", range));
+    EXPECT_NEAR(12.5f, range, 1e-5);
+
+    ::remove(outFile);
+}
+
+TEST_F(utglTF2ImportExport, importglTF2AndExport_unsupportedLightTypeFails) {
+    const char *outFile = ASSIMP_TEST_MODELS_DIR "/glTF2/KHR_lights_punctual/Lights_invalid_out.glb";
+    Assimp::Importer importer;
+    Assimp::Exporter exporter;
+    const aiScene *scene = importer.ReadFile(ASSIMP_TEST_MODELS_DIR "/glTF2/KHR_lights_punctual/Lights.gltf",
+            aiProcess_ValidateDataStructure);
+    ASSERT_NE(nullptr, scene);
+    ASSERT_EQ(3u, scene->mNumLights);
+
+    // Ambient lights cannot be expressed with KHR_lights_punctual: the export
+    // must fail instead of silently dropping the light.
+    scene->mLights[0]->mType = aiLightSource_AMBIENT;
+    EXPECT_EQ(aiReturn_FAILURE, exporter.Export(scene, "glb2", outFile));
+
+    ::remove(outFile);
+}
+
 TEST_F(utglTF2ImportExport, importglTF2AndExportToOBJ) {
     Assimp::Importer importer;
     Assimp::Exporter exporter;

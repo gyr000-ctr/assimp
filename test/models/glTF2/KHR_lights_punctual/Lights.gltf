@@ -1,0 +1,124 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "assimp KHR_lights_punctual round-trip test"
+  },
+  "extensionsUsed": [
+    "KHR_lights_punctual"
+  ],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        {
+          "name": "Sun",
+          "type": "directional",
+          "color": [1.0, 0.9, 0.8],
+          "intensity": 2.0
+        },
+        {
+          "name": "Lamp",
+          "type": "point",
+          "color": [1.0, 1.0, 1.0],
+          "intensity": 5.0,
+          "range": 12.5
+        },
+        {
+          "name": "Spot",
+          "type": "spot",
+          "color": [0.2, 0.4, 1.0],
+          "intensity": 3.0,
+          "spot": {
+            "innerConeAngle": 0.1,
+            "outerConeAngle": 0.6
+          }
+        }
+      ]
+    }
+  },
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "max": [1.0, 1.0, 0.0],
+      "min": [0.0, 0.0, 0.0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+      "byteLength": 42
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36,
+      "byteLength": 6
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Triangle",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 1
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Triangle",
+      "mesh": 0
+    },
+    {
+      "name": "Sun",
+      "rotation": [-0.7071068, 0.0, 0.0, 0.7071068],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 0
+        }
+      }
+    },
+    {
+      "name": "Lamp",
+      "translation": [0.0, 2.0, 0.0],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 1
+        }
+      }
+    },
+    {
+      "name": "Spot",
+      "translation": [1.0, 2.0, 0.0],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 2
+        }
+      }
+    }
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [0, 1, 2, 3]
+    }
+  ]
+}
